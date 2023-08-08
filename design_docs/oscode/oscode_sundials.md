@@ -98,7 +98,7 @@ $$
 
 
 $$
-\delta \dot{x} = B_+ \delta \dot{f}_+ + B_- \delta \dot{f}_- 
+\delta \dot{x} 
 $$
 
 $$
