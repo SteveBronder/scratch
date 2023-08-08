@@ -99,7 +99,7 @@
 #include <stdlib.h>
 #include <math.h>
 
-#include <oscode/oscode.h>      /* prototypes for ARKStep fcts., consts        */
+#include <oscode/oscode.h>      /* prototypes for OSCODE fcts., consts        */
 #include <sunlinsol/sunlinsol_spgmr.h>  /* access to SPGMR SUNLinearSolver             */
 #include <nvector/nvector_serial.h>     /* serial N_Vector types, fct. and macros      */
 #include <sundials/sundials_dense.h>    /* use generic DENSE solver in preconditioning */
@@ -862,7 +862,7 @@ static int Precond(realtype t, N_Vector c, N_Vector fc, booleantype jok,
         /* Generate the jth column as a difference quotient */
         jj = if0 + j;
         save = cdata[jj];
-        r = MAX(srur*fabs(save),r0/rewtdata[jj]);
+        r = std::max(srur*fabs(save),r0/rewtdata[jj]);
         cdata[jj] += r;
         fac = -gamma/r;
         fblock (t, cdata, jx, jy, f1, wdata);

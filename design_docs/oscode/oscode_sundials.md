@@ -9,30 +9,47 @@ $$ \ddot{x} + 2 \gamma(t) \dot{x}(t) + \omega^2(t)x(t) = 0 $$
 
 where $\gamma$ and $\omega$ may or may not be expressed as a closed form function of time.
 
-Where equation expressed above can be reposed as a first order ODE
-
-$$
-\dot{y} = \begin{pmatrix}
-\dfrac{\partial M_x}{\partial t}\\
-\dfrac{\partial M_y}{\partial t}\\
-\dfrac{\partial M_z}{\partial t}
-\end{pmatrix}
-$$
-
 This new module will follow the same C based API with an underlying C++ implementation. 
 
 # Motivation
 [motivation]: #motivation
 
-Oscillatory ODEs are commonly used in fields such as physics, finance, and engineering. Solutions to oscillatory problems are often bespoke and use anlytic approximations such as the Wentzel-Kramers-Brilouin (WKB) method. Giving researchers access to a general purpose solvers for solutions for ODEs of the form written above will allow them to do their research faster and with better accuracy.
+Oscillatory ODEs are commonly used in fields such as physics, finance, and engineering. Solutions to oscillatory problems are often bespoke and use analytic approximations such as the Wentzel-Kramers-Brilouin (WKB) method. Giving researchers access to a general purpose solvers for solutions for ODEs of the form written above will allow them to do their research faster and with better accuracy.
+
+The second order ODE can be reposed as a first order ODE to fit into the standard schema for sundials solvers
+
+$$
+\dot{y} = \begin{pmatrix}
+y[1]\\
+-y[0]w^2(t)-2\gamma(t)y[1]
+\end{pmatrix}
+$$
+
+The most similar module is ARKODE, which solves equations with known explicit and implicit nonstiff and stiff time scale components. 
+
+$$
+M(t)\ddot{y} = f^E(t, y) + f^I(t, y), y(t_0) = y_0
+$$
+
+For the new OSCODE module we propose the equation will take the form
+
+$$
+M(t)\ddot{y} = f^B(t, y), y(t_0) = y_0
+$$
 
 
+where $$f^B(t, y)$$ has the ability to switch dynamically between an Runge-Kutta (RK) solver and Wentzel-Kramers-Brillouin (WKB) solver based on the relative error of the RK and WKB methods.
 
+OSCODE's ability to switch between the RK and WKB solvers allow for accurate and easy time integration of mixed stiff/nonstiff systems of ordinary differential equations. The OSCODE framework is packaged with built in butcher tables for order 6, though users can supply their own buther tables of any order. OSCODE also supports unevenly spaced samples of `y`.
+
+Runge-Kutta Solver:
+
+
+Wentzel-Kramers-Brillouin Solver:
 
 
 # Guide-level explanation
 [guide-level-explanation]: #guide-level-explanation
-
 
 
 Explain the proposal as if it was already included in the project and you were teaching it to another Stan programmer in the manual. That generally means:
@@ -45,6 +62,21 @@ Explain the proposal as if it was already included in the project and you were t
 
 For implementation-oriented RFCs (e.g. for compiler internals), this section should focus on how compiler contributors should think about the change, and give examples of its concrete impact. For policy RFCs, this section should provide an example-driven introduction to the policy, and explain its impact in concrete terms.
 
+------------------------------------
+
+The OSCODE infrastructure provides adaptive-step time integration modules for mixed stiff/nonstiff systems of ordinary differential equations (ODEs) where the stiff and nonstiff components are not known in advance and are possibly oscillatory.  
+
+OSCODE supports ODE systems posed in a linearly implicit form
+
+$$
+M(t)\ddot{y} = f^B(t, y), y(t_0) = y_0
+$$
+
+where `t` is the independent variable, `y` is the set of dependent variables (in `Rn`), `M` is a user specified, nonsingular operator from `Rn` to `Rn`, and the right hand side is a function whose stiff and nonstiff components are not known in advance. The function $$f^B(t, y)$$ has the ability to switch dynamically between stiff and non-stiff time scales based on the relative performance of a Runge-Kutta method and a Wentzel-Kramers-Brillouin method.
+
+
+
+
 # Reference-level explanation
 [reference-level-explanation]: #reference-level-explanation
 
@@ -55,6 +87,9 @@ This is the technical portion of the RFC. Explain the design in sufficient detai
 - Corner cases are dissected by example.
 
 The section should return to the examples given in the previous section, and explain more fully how the detailed proposal makes those examples work.
+
+----------------------------------------------
+
 
 The main driver of `OSCODE` will be the function `oscEvolve` with a similar signature to `arkEvolve`
 
@@ -119,7 +154,9 @@ Users can set:
 # Drawbacks
 [drawbacks]: #drawbacks
 
-Why should we *not* do this?
+The main question is the user base. As long as we think there enough researchers that would use this method then it most likely makes sense to add.
+
+The other main question to this proposal is whether it's possible to make this fit in the ARKODE framework.
 
 # Rationale and alternatives
 [rationale-and-alternatives]: #rationale-and-alternatives
@@ -135,19 +172,27 @@ Discuss prior art, both the good and the bad, in relation to this proposal.
 A few examples of what this can include are:
 
 - For language, library, tools, and compiler proposals: Does this feature exist in other programming languages and what experience have their community had?
-- For community proposals: Is this done by some other community and what were their experiences with it?
-- For other teams: What lessons can we learn from what other communities have done here?
+
+The OSCODE solver is currently available as a python package and standalone header files. 
+
 - Papers: Are there any published papers or great posts that discuss this? If you have some relevant papers to refer to, this can serve as a more detailed theoretical background.
 
-This section is intended to encourage you as an author to think about the lessons from other languages, provide readers of your RFC with a fuller picture.
-If there is no prior art, that is fine - your ideas are interesting to us whether they are brand new or if it is an adaptation from other languages.
+Original paper: "Efficient method for solving highly oscillatory ordinary differential equations
+with applications to physical systems"
+- https://journals.aps.org/prresearch/pdf/10.1103/PhysRevResearch.2.013030
 
-Note that while precedent set by other languages is some motivation, it does not on its own motivate an RFC.
-Please also take into consideration that rust sometimes intentionally diverges from common language features.
 
 # Unresolved questions
 [unresolved-questions]: #unresolved-questions
 
 - What parts of the design do you expect to resolve through the RFC process before this gets merged?
+
+Whether OSCODE should be its own seperate module or whether it is possible to fit it in the ARKODE framework.
+
 - What parts of the design do you expect to resolve through the implementation of this feature before stabilization?
+
+I'd like to resolve what the user should have access to modify, for example the butcher tables in the RK method.
+
 - What related issues do you consider out of scope for this RFC that could be addressed in the future independently of the solution that comes out of this RFC?
+
+Any reworking of the algorithm itself would be out of scope of this document.
