@@ -96,7 +96,9 @@ $$
 
 
 $$
-\delta \ddot{x}_{WKB} = B_+ \delta \cdot{f}_+ + B_- \delta \ddot{f}_- \\
+\delta \ddot{x}_{WKB} = B_+ \delta \ddot{f}_+ + B_- \delta \ddot{f}_- 
+$$
+$$
 \delta \ddot{f}_\pm = \delta f_\pm \frac{\ddot{f}_\pm}{f_\pm}
 $$
 
