@@ -92,6 +92,9 @@ At each step, either the WKB or RK solver is chosen for that step based on the r
 $$
 \delta x_{WKB} = A_+ \delta f_+ + A_- \delta f_- 
 $$
+
+test 
+
 $$
 \delta f_\pm = f_\pm \sum_{i=0}^n \delta[S_i]_t^{t + h}
 $$
