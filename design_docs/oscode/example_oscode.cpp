@@ -1,6 +1,7 @@
-/*-----------------------------------------------------------------
+/* ----------------------------------------------------------------
  * Programmer(s): Daniel R. Reynolds @ SMU
- *---------------------------------------------------------------
+ *                Rujeko Chinomona @ SMU
+ * ----------------------------------------------------------------
  * SUNDIALS Copyright Start
  * Copyright (c) 2002-2023, Lawrence Livermore National Security
  * and Southern Methodist University.
@@ -10,1187 +11,917 @@
  *
  * SPDX-License-Identifier: BSD-3-Clause
  * SUNDIALS Copyright End
- *---------------------------------------------------------------
- * Demonstration program for ARKODE - Krylov linear solver.
- * ODE system from ns-species interaction PDE in 2 dimensions.
+ * ----------------------------------------------------------------
+ * Multirate nonlinear Kvaerno-Prothero-Robinson ODE test problem:
  *
- * This program solves a stiff ODE system that arises from a system
- * of partial differential equations. The PDE system is a food web
- * population model, with predator-prey interaction and diffusion on
- * the unit square in two dimensions. The dependent variable vector is:
+ *    [u]' = [ G  e ] [(-1+u^2-r)/(2u)] + [      r'(t)/(2u)        ]
+ *    [v]    [ e -1 ] [(-2+v^2-s)/(2v)]   [ s'(t)/(2*sqrt(2+s(t))) ]
+ *         = [ fs(t,u,v) ]
+ *           [ ff(t,u,v) ]
  *
- *        1   2        ns
- *  c = (c , c , ..., c  )
+ * where r(t) = 0.5*cos(t),  s(t) = cos(w*t),  0 < t < 5.
  *
- * and the PDEs are as follows:
+ * This problem has analytical solution given by
+ *    u(t) = sqrt(1+r(t)),  v(t) = sqrt(2+s(t)).
  *
- *    i               i      i
- *  dc /dt  =  d(i)*(c    + c   )  +  f (x,y,c)  (i=1,...,ns)
- *                    xx     yy        i
+ * We use the parameters:
+ *   e = 0.5 (fast/slow coupling strength) [default]
+ *   G = -1e2 (stiffness at slow time scale) [default]
+ *   w = 100  (time-scale separation factor) [default]
+ *   hs = 0.01 (slow step size) [default]
  *
- * where
+ * The stiffness of the slow time scale is essentially determined
+ * by G, for |G| > 50 it is 'stiff' and ideally suited to a
+ * multirate method that is implicit at the slow time scale.
  *
- *                 i          ns         j
- *  f (x,y,c)  =  c *(b(i) + sum a(i,j)*c )
- *   i                       j=1
+ * We select the MRI method to use based on an additional input,
+ * solve_type; with options (slow type-order/fast type-order):
+ * 0. exp-3/exp-3 (standard MIS) [default]
+ * 1. none/exp-3 (no slow, explicit fast)
+ * 2. none/dirk-3 (no slow, dirk fast)
+ * 3. exp-3/none (explicit slow, no fast)
+ * 4. dirk-2/none (dirk slow, no fast) -- solve-decoupled
+ * 5. exp-4/exp-4 (MRI-GARK-ERK45a / ERK-4-4)
+ * 6. exp-4/exp-3 (MRI-GARK-ERK45a / ERK-3-3)
+ * 7. dirk-3/exp-3 (MRI-GARK-ESDIRK34a / ERK-3-3) -- solve decoupled
+ * 8. ars343/exp-3 (IMEX-MRI3b / ERK-3-3) -- solve decoupled
+ * 9. imexark4/exp-4 (IMEX-MRI4/ ERK-4-4) -- solve decoupled
  *
- * The number of species is ns = 2*np, with the first np being prey
- * and the last np being predators. The coefficients a(i,j), b(i),
- * d(i) are:
+ * We note that once we have methods that are IMEX at the slow time
+ * scale, the nonstiff slow term,  [ r'(t)/(2u) ], can be treated
+ * explicitly.
  *
- *  a(i,i) = -a  (all i)
- *  a(i,j) = -g  (i <= np, j > np)
- *  a(i,j) =  e  (i > np, j <= np)
- *  b(i) =  b*(1 + alpha*x*y)  (i <= np)
- *  b(i) = -b*(1 + alpha*x*y)  (i > np)
- *  d(i) = Dprey  (i <= np)
- *  d(i) = Dpred  (i > np)
+ * The program should be run with arguments in the following order:
+ *   $ a.out solve_type h G w e deduce
+ * Not all arguments are required, but these must be omitted from
+ * end-to-beginning, i.e. any one of
+ *   $ a.out solve_type h G w e
+ *   $ a.out solve_type h G w
+ *   $ a.out solve_type h G
+ *   $ a.out solve_type h
+ *   $ a.out solve_type
+ *   $ a.out
+ * are acceptable.  We require:
+ *   * 0 <= solve_type <= 9
+ *   * 0 < h < 1/|G|
+ *   * G < 0.0
+ *   * w >= 1.0
  *
- * The spatial domain is the unit square. The final time is 10.
- * The boundary conditions are: normal derivative = 0.
- * A polynomial in x and y is used to set the initial conditions.
- *
- * The PDEs are discretized by central differencing on an MX by MY mesh.
- *
- * The resulting ODE system is stiff.
- *
- * The ODE system is solved using Newton iteration and the
- * SUNLinSol_SPGMR linear solver (scaled preconditioned GMRES).
- *
- * The preconditioner matrix used is the product of two matrices:
- * (1) A matrix, only defined implicitly, based on a fixed number of
- * Gauss-Seidel iterations using the diffusion terms only. (2) A
- * block-diagonal matrix based on the partial derivatives of the
- * interaction terms f only, using block-grouping (computing only a
- * subset of the ns by ns blocks).
- *
- * Four different runs are made for this problem. The product
- * preconditoner is applied on the left and on the right. In each
- * case, both the modified and classical Gram-Schmidt options are
- * tested. In the series of runs, ARKStepCreate, SUNLinSol_SPGMR and
- * ARKStepSetLinearSolver are called only for the first run, whereas
- * ARKStepReInit, SUNLinSol_SPGMRSetPrecType, and
- * SUNLinSol_SPGMRSetGSType are called for each of the remaining
- * three runs.
- *
- * A problem description, performance statistics at selected output
- * times, and final statistics are written to standard output.
- * On the first run, solution values are also printed at output
- * times. Error and warning messages are written to standard error,
- * but there should be no such messages.
- *
- * Note: This program requires the dense linear solver functions
- * SUNDlsMat_newDenseMat, SUNDlsMat_newIndexArray,
- * SUNDlsMat_denseAddIdentity, SUNDlsMat_denseGETRF,
- * SUNDlsMat_denseGETRS, SUNDlsMat_destroyMat and
- * SUNDlsMat_destroyArray.
- *
- * Note: This program assumes the sequential implementation for the
- * type N_Vector and uses the N_VGetArrayPointer function to gain
- * access to the contiguous array of components of an N_Vector.
- *-------------------------------------------------------------------
- * Reference: Peter N. Brown and Alan C. Hindmarsh, Reduced Storage
- * Matrix Methods in Stiff ODE Systems, J. Appl. Math. & Comp., 31
- * (1989), pp. 40-91.  Also available as Lawrence Livermore National
- * Laboratory Report UCRL-95088, Rev. 1, June 1987.
- *-----------------------------------------------------------------*/
+ * This program solves the problem with the MRI stepper. Outputs are
+ * printed at equal intervals of 0.1 and run statistics are printed
+ * at the end.
+ * ----------------------------------------------------------------*/
 
+/* Header files */
 #include <stdio.h>
-#include <stdlib.h>
 #include <math.h>
+#include <arkode/oscode.h>      /* prototypes for ARKStep fcts., consts */
+#include <nvector/nvector_serial.h>     /* serial N_Vector type, fcts., macros  */
+#include <sunmatrix/sunmatrix_dense.h>  /* dense matrix type, fcts., macros     */
+#include <sunlinsol/sunlinsol_dense.h>  /* dense linear solver                  */
+#include <sundials/sundials_math.h>     /* def. math fcns, 'realtype'           */
 
-#include <oscode/oscode.h>      /* prototypes for OSCODE fcts., consts        */
-#include <sunlinsol/sunlinsol_spgmr.h>  /* access to SPGMR SUNLinearSolver             */
-#include <nvector/nvector_serial.h>     /* serial N_Vector types, fct. and macros      */
-#include <sundials/sundials_dense.h>    /* use generic DENSE solver in preconditioning */
-#include <sundials/sundials_types.h>    /* definition of realtype                      */
-
-/* helpful macros */
-
-#ifndef MAX
-#define MAX(A, B) ((A) > (B) ? (A) : (B))
+#if defined(SUNDIALS_EXTENDED_PRECISION)
+#define GSYM ".20Lg"
+#define ESYM "Le"
+#define FSYM "Lf"
+#else
+#define GSYM "g"
+#define ESYM "e"
+#define FSYM "f"
 #endif
-
-#ifndef SQR
-#define SQR(A) ((A)*(A))
-#endif
-
-#ifndef SQRT
-#if defined(SUNDIALS_DOUBLE_PRECISION)
-#define SQRT(x) (sqrt((x)))
-#elif defined(SUNDIALS_SINGLE_PRECISION)
-#define SQRT(x) (sqrtf((x)))
-#elif defined(SUNDIALS_EXTENDED_PRECISION)
-#define SQRT(x) (sqrtl((x)))
-#endif
-#endif
-
-/* Constants */
 
 #define ZERO RCONST(0.0)
 #define ONE  RCONST(1.0)
+#define TWO  RCONST(2.0)
 
-/* Problem Specification Constants */
-
-#define AA    ONE               /* AA = a */
-#define EE    RCONST(1.0e4)     /* EE = e */
-#define GG    RCONST(0.5e-6)    /* GG = g */
-#define BB    ONE               /* BB = b */
-#define DPREY ONE
-#define DPRED RCONST(0.5)
-#define ALPH  ONE
-#define NP    3
-#define NS    (2*NP)
-
-/* Method Constants */
-
-#define MX    6
-#define MY    6
-#define MXNS  (MX*NS)
-#define AX    ONE
-#define AY    ONE
-#define DX    (AX/(realtype)(MX-1))
-#define DY    (AY/(realtype)(MY-1))
-#define MP    NS
-#define MQ    (MX*MY)
-#define MXMP  (MX*MP)
-#define NGX   2
-#define NGY   2
-#define NGRP  (NGX*NGY)
-#define ITMAX 5
-
-/* Init Constants */
-
-#define NEQ  (NS*MX*MY)
-#define T0   ZERO
-#define RTOL RCONST(1.0e-5)
-#define ATOL RCONST(1.0e-5)
-
-/* Spgmr Constants */
-
-#define MAXL 0     /* => use default = MIN(NEQ, 5)            */
-#define DELT ZERO  /* => use default = 0.05                   */
-
-/* Output Constants */
-
-#define T1        RCONST(1.0e-8)
-#define TOUT_MULT RCONST(10.0)
-#define DTOUT     ONE
-#define NOUT      18
-
-/* Note: The value for species i at mesh point (j,k) is stored in */
-/* component number (i-1) + j*NS + k*NS*MX of an N_Vector,        */
-/* where 1 <= i <= NS, 0 <= j < MX, 0 <= k < MY.                  */
-
-/* Structure for user data */
-
-typedef struct {
-  realtype **P[NGRP];
-  sunindextype *pivot[NGRP];
-  int ns, mxns;
-  int mp, mq, mx, my, ngrp, ngx, ngy, mxmp;
-  int jgx[NGX+1], jgy[NGY+1], jigx[MX], jigy[MY];
-  int jxr[NGX], jyr[NGY];
-  realtype acoef[NS][NS], bcoef[NS], diff[NS];
-  realtype cox[NS], coy[NS], dx, dy, srur;
-  realtype fsave[NEQ];
-  N_Vector tmp;
-  N_Vector rewt;
-  void *arkode_mem;
-} *WebData;
-
-/* Private Helper Functions */
-
-static WebData AllocUserData(SUNContext ctx);
-static void InitUserData(WebData wdata);
-static void SetGroups(int m, int ng, int jg[], int jig[], int jr[]);
-static void CInit(N_Vector c, WebData wdata);
-static void PrintIntro(void);
-static void PrintHeader(int jpre, int gstype);
-static void PrintAllSpecies(N_Vector c, int ns, int mxns, realtype t);
-static void PrintOutput(void *arkode_mem, realtype t);
-static void PrintFinalStats(void *arkode_mem);
-static void FreeUserData(WebData wdata);
-static void WebRates(realtype x, realtype y, realtype t, realtype c[],
-                     realtype rate[], WebData wdata);
-static void fblock (realtype t, realtype cdata[], int jx, int jy,
-                    realtype cdotdata[], WebData wdata);
-static void GSIter(realtype gamma, N_Vector z, N_Vector x, WebData wdata);
-
-/* Small Vector Kernels */
-
-static void v_inc_by_prod(realtype u[], realtype v[], realtype w[], int n);
-static void v_sum_prods(realtype u[], realtype p[], realtype q[], realtype v[],
-                        realtype w[], int n);
-static void v_prod(realtype u[], realtype v[], realtype w[], int n);
-static void v_zero(realtype u[], int n);
-
-/* Functions Called By The Solver */
-
-static int f(realtype t, N_Vector y, N_Vector ydot, void *user_data);
-
-static int Precond(realtype tn, N_Vector c, N_Vector fc, booleantype jok,
-                   booleantype *jcurPtr, realtype gamma, void *user_data);
-
-static int PSolve(realtype tn, N_Vector c, N_Vector fc, N_Vector r, N_Vector z,
-                  realtype gamma, realtype delta, int lr, void *user_data);
+/* User-supplied functions called by the solver */
+static int fse(realtype t, N_Vector y, N_Vector ydot, void *user_data);
+static int fsi(realtype t, N_Vector y, N_Vector ydot, void *user_data);
+static int fs(realtype t, N_Vector y, N_Vector ydot, void *user_data);
+static int ff(realtype t, N_Vector y, N_Vector ydot, void *user_data);
+static int fn(realtype t, N_Vector y, N_Vector ydot, void *user_data);
+static int f0(realtype t, N_Vector y, N_Vector ydot, void *user_data);
+static int Js(realtype t, N_Vector y, N_Vector fy, SUNMatrix J, void *user_data,
+              N_Vector tmp1, N_Vector tmp2, N_Vector tmp3);
+static int Jsi(realtype t, N_Vector y, N_Vector fy, SUNMatrix J, void *user_data,
+              N_Vector tmp1, N_Vector tmp2, N_Vector tmp3);
+static int Jn(realtype t, N_Vector y, N_Vector fy, SUNMatrix J, void *user_data,
+              N_Vector tmp1, N_Vector tmp2, N_Vector tmp3);
 
 /* Private function to check function return values */
+static realtype r(realtype t, void *user_data);
+static realtype s(realtype t, void *user_data);
+static realtype rdot(realtype t, void *user_data);
+static realtype sdot(realtype t, void *user_data);
+static realtype utrue(realtype t, void *user_data);
+static realtype vtrue(realtype t, void *user_data);
+static int Ytrue(realtype t, N_Vector y, void *user_data);
+static int check_retval(void *returnvalue, const char *funcname, int opt);
 
-static int check_flag(void *flagvalue, const char *funcname, int opt);
 
-/* Implementation */
-
-int main(int argc, char* argv[])
+/* Main Program */
+int main(int argc, char *argv[])
 {
-  realtype abstol=ATOL, reltol=RTOL, t, tout;
-  N_Vector c = NULL;
-  WebData wdata = NULL;
-  SUNLinearSolver LS = NULL;
-  void *arkode_mem = NULL;
-  booleantype firstrun;
-  int jpre, gstype, flag;
-  int ns, mxns, iout;
-  int nrmfactor = 0;   /* LS norm conversion factor flag */
-  realtype nrmfac;     /* LS norm conversion factor      */
+  SUNContext ctx;
+
+  /* general problem parameters */
+  realtype T0 = RCONST(0.0);     /* initial time */
+  realtype Tf = RCONST(5.0);     /* final time */
+  realtype dTout = RCONST(0.1);  /* time between outputs */
+  sunindextype NEQ = 2;          /* number of dependent vars. */
+  int Nt = (int) ceil(Tf/dTout); /* number of output times */
+  int solve_type = 0;            /* problem configuration type */
+  realtype hs = RCONST(0.01);    /* step size */
+//  realtype e = RCONST(0.5);      /* fast/slow coupling strength */
+//  realtype G = RCONST(-100.0);   /* stiffness at slow time scale */
+//  realtype w = RCONST(100.0);    /* time-scale separation factor */
+  realtype reltol = RCONST(0.01);
+  realtype abstol = 1e-11;
+
+  /* general problem variables */
+  int retval;                               /* reusable error-checking flag */
+  N_Vector y = NULL;                        /* vector for the solution      */
+  void *arkode_mem = NULL;                  /* ARKode memory structure      */
+  void *inner_arkode_mem = NULL;            /* ARKode memory structure      */
+  MRIStepInnerStepper inner_stepper = NULL; /* inner stepper                */
+  ARKodeButcherTable B = NULL;              /* fast method Butcher table    */
+  MRIStepCoupling C = NULL;                 /* slow coupling coefficients   */
+  SUNMatrix Af = NULL;                      /* matrix for fast solver       */
+  SUNLinearSolver LSf = NULL;               /* fast linear solver object    */
+  SUNMatrix As = NULL;                      /* matrix for slow solver       */
+  SUNLinearSolver LSs = NULL;               /* slow linear solver object    */
+  booleantype implicit_slow;
+  booleantype imex_slow = SUNFALSE;
+  booleantype deduce = SUNFALSE;
+  FILE *UFID;
+  realtype hf, gamma, beta, t, tout, rpar[3];
+  realtype uerr, verr, uerrtot, verrtot, errtot;
+  int iout;
+  long int nsts, nstf, nfse, nfsi, nff, nnif, nncf, njef, nnis, nncs, njes, tmp;
+
+  /*
+   * Initialization
+   */
+
+  /* Retrieve the command-line options: solve_type h G w e */
+  if (argc > 1)  solve_type = (sunindextype) atol(argv[1]);
+  if (argc > 2)  hs = SUNStrToReal(argv[2]);
+  if (argc > 3)  G = SUNStrToReal(argv[3]);
+  if (argc > 4)  w = SUNStrToReal(argv[4]);
+  if (argc > 5)  e = SUNStrToReal(argv[5]);
+  if (argc > 6)  deduce = (booleantype) atoi(argv[6]);
+
+  /* Check arguments for validity */
+  /*   0 <= solve_type <= 9      */
+  /*   G < 0.0                   */
+  /*   h > 0                     */
+  /*   h < 1/|G| (explicit slow) */
+  /*   w >= 1.0                  */
+  if ((solve_type < 0) || (solve_type > 9)) {
+    printf("ERROR: solve_type be an integer in [0,9] \n");
+    return(-1);
+  }
+  if (G >= ZERO) {
+    printf("ERROR: G must be a negative real number\n");
+    return(-1);
+  }
+  implicit_slow = SUNFALSE;
+  if ((solve_type == 4) || (solve_type == 7))
+    implicit_slow = SUNTRUE;
+  if ((solve_type == 8) || (solve_type == 9)) {
+    implicit_slow = SUNTRUE;
+    imex_slow = SUNTRUE;
+  }
+  if (hs <= ZERO){
+    printf("ERROR: hs must be in positive\n");
+    return(-1);
+  }
+  if ((hs > ONE/SUNRabs(G)) && (!implicit_slow)) {
+    printf("ERROR: hs must be in (0, 1/|G|)\n");
+    return(-1);
+  }
+  if (w < ONE) {
+    printf("ERROR: w must be >= 1.0\n");
+    return(-1);
+  }
+  rpar[0] = G;
+  rpar[1] = w;
+  rpar[2] = e;
+  hf = hs/w;
+
+  /* Initial problem output (and set implicit solver tolerances as needed) */
+  printf("\nMultirate nonlinear Kvaerno-Prothero-Robinson test problem:\n");
+  printf("    time domain:  (%"GSYM",%"GSYM"]\n",T0,Tf);
+  printf("    hs = %"GSYM"\n",hs);
+  printf("    hf = %"GSYM"\n",hf);
+  printf("    G = %"GSYM"\n",G);
+  printf("    w = %"GSYM"\n",w);
+  printf("    e = %"GSYM"\n",e);
+  switch (solve_type) {
+  case(0):
+    printf("    solver: exp-3/exp-3 (standard MIS)\n\n");
+    break;
+  case(1):
+    printf("    solver: none/exp-3 (no slow, explicit fast)\n\n");
+    break;
+  case(2):
+    reltol = SUNMAX(hs*hs*hs, 1e-10);
+    abstol = 1e-11;
+    printf("    solver: none/dirk-3 (no slow, dirk fast)\n\n");
+    printf("    reltol = %.2"ESYM",  abstol = %.2"ESYM"\n", reltol, abstol);
+    break;
+  case(3):
+    printf("    solver: exp-3/none (explicit slow, no fast)\n");
+    break;
+  case(4):
+    reltol = SUNMAX(hs*hs, 1e-10);
+    abstol = 1e-11;
+    printf("    solver: dirk-2/none (dirk slow, no fast)\n");
+    printf("    reltol = %.2"ESYM",  abstol = %.2"ESYM"\n", reltol, abstol);
+    break;
+  case(5):
+    printf("    solver: exp-4/exp-4 (MRI-GARK-ERK45a / ERK-4-4)\n\n");
+    break;
+  case(6):
+    printf("    solver: exp-4/exp-3 (MRI-GARK-ERK45a / ERK-3-3)\n\n");
+    break;
+  case(7):
+    reltol = SUNMAX(hs*hs*hs, 1e-10);
+    abstol = 1e-11;
+    printf("    solver: dirk-3/exp-3 (MRI-GARK-ESDIRK34a / ERK-3-3) -- solve decoupled\n");
+    printf("    reltol = %.2"ESYM",  abstol = %.2"ESYM"\n", reltol, abstol);
+    break;
+  case(8):
+    reltol = SUNMAX(hs*hs*hs, 1e-10);
+    abstol = 1e-11;
+    printf("    solver: ars343/exp-3 (IMEX-MRI3b / ERK-3-3) -- solve decoupled\n");
+    printf("    reltol = %.2"ESYM",  abstol = %.2"ESYM"\n", reltol, abstol);
+    break;
+  case(9):
+    reltol = SUNMAX(hs*hs*hs*hs, 1e-14);
+    abstol = 1e-14;
+    printf("    solver: imexark4/exp-4 (IMEX-MRI4 / ERK-4-4) -- solve decoupled\n");
+    printf("    reltol = %.2"ESYM",  abstol = %.2"ESYM"\n", reltol, abstol);
+    break;
+  }
 
   /* Create the SUNDIALS context object for this simulation */
-  SUNContext ctx;
-  flag = SUNContext_Create(NULL, &ctx);
-  if (check_flag(&flag, "SUNContext_Create", 1)) return 1;
+  retval = SUNContext_Create(NULL, &ctx);
+  if (check_retval(&retval, "SUNContext_Create", 1)) return 1;
 
-  /* Retrieve the command-line options */
-  if (argc > 1) nrmfactor = atoi(argv[1]);
+  /* Create and initialize serial vector for the solution */
+  y = N_VNew_Serial(NEQ, ctx);
+  if (check_retval((void *)y, "N_VNew_Serial", 0)) return 1;
+  retval = Ytrue(T0, y, rpar);
+  if (check_retval(&retval, "Ytrue", 1)) return 1;
 
-  /* Initializations */
-  c = N_VNew_Serial(NEQ, ctx);
-  if(check_flag((void *)c, "N_VNew_Serial", 0)) return(1);
-  wdata = AllocUserData(ctx);
-  if(check_flag((void *)wdata, "AllocUserData", 2)) return(1);
-  InitUserData(wdata);
-  ns = wdata->ns;
-  mxns = wdata->mxns;
+  /*
+   * Create the fast integrator and set options
+   */
 
-  /* Print problem description */
-  PrintIntro();
-
-  /* Loop over jpre and gstype (four cases) */
-  for (jpre = SUN_PREC_LEFT; jpre <= SUN_PREC_RIGHT; jpre++) {
-    for (gstype = SUN_MODIFIED_GS; gstype <= SUN_CLASSICAL_GS; gstype++) {
-
-      /* Initialize c and print heading */
-      CInit(c, wdata);
-      PrintHeader(jpre, gstype);
-
-      /* Call ARKStepCreate or ARKStepReInit, then SPGMR to set up problem */
-
-      firstrun = (jpre == SUN_PREC_LEFT) && (gstype == SUN_MODIFIED_GS);
-      if (firstrun) {
-        arkode_mem = ARKStepCreate(NULL, f, T0, c, ctx);
-        if(check_flag((void *)arkode_mem, "ARKStepCreate", 0)) return(1);
-
-        wdata->arkode_mem = arkode_mem;
-
-        flag = ARKStepSetUserData(arkode_mem, wdata);
-        if(check_flag(&flag, "ARKStepSetUserData", 1)) return(1);
-
-        flag = ARKStepSStolerances(arkode_mem, reltol, abstol);
-        if(check_flag(&flag, "ARKStepSStolerances", 1)) return(1);
-
-        flag = ARKStepSetMaxNumSteps(arkode_mem, 1000);
-        if(check_flag(&flag, "ARKStepSetMaxNumSteps", 1)) return(1);
-
-        flag = ARKStepSetNonlinConvCoef(arkode_mem, 1.e-3);
-        if(check_flag(&flag, "ARKStepSetNonlinConvCoef", 1)) return(1);
-
-        LS = SUNLinSol_SPGMR(c, jpre, MAXL, ctx);
-        if(check_flag((void *)LS, "SUNLinSol_SPGMR", 0)) return(1);
-
-        flag = ARKStepSetLinearSolver(arkode_mem, LS, NULL);
-        if(check_flag(&flag, "ARKStepSetLinearSolver", 1)) return 1;
-
-        flag = SUNLinSol_SPGMRSetGSType(LS, gstype);
-        if(check_flag(&flag, "SUNLinSol_SPGMRSetGSType", 1)) return(1);
-
-        flag = ARKStepSetEpsLin(arkode_mem, DELT);
-        if(check_flag(&flag, "ARKStepSetEpsLin", 1)) return(1);
-
-        flag = ARKStepSetPreconditioner(arkode_mem, Precond, PSolve);
-        if(check_flag(&flag, "ARKStepSetPreconditioner", 1)) return(1);
-
-        /* Set the linear solver tolerance conversion factor */
-        switch(nrmfactor) {
-
-        case(1):
-          /* use the square root of the vector length */
-          nrmfac = SQRT((realtype)NEQ);
-          break;
-        case(2):
-          /* compute with dot product */
-          nrmfac = -ONE;
-          break;
-        default:
-          /* use the default */
-          nrmfac = ZERO;
-          break;
-        }
-
-        flag = ARKStepSetLSNormFactor(arkode_mem, nrmfac);
-        if (check_flag(&flag, "ARKStepSetLSNormFactor", 1)) return(1);
-
-      } else {
-
-        flag = ARKStepReInit(arkode_mem, NULL, f, T0, c);
-        if(check_flag(&flag, "ARKStepReInit", 1)) return(1);
-
-        flag = SUNLinSol_SPGMRSetPrecType(LS, jpre);
-        if(check_flag(&flag, "SUNLinSol_SPGMRSetPrecType", 1)) return(1);
-
-        flag = SUNLinSol_SPGMRSetGSType(LS, gstype);
-        if(check_flag(&flag, "SUNLinSol_SPGMRSetGSType", 1)) return(1);
-
-      }
-
-      /* Print initial values */
-      if (firstrun) PrintAllSpecies(c, ns, mxns, T0);
-
-      /* Loop over output points, call ARKStepEvolve, print sample solution values. */
-      tout = T1;
-      for (iout = 1; iout <= NOUT; iout++) {
-        flag = ARKStepEvolve(arkode_mem, tout, c, &t, ARK_NORMAL);
-        PrintOutput(arkode_mem, t);
-        if (firstrun && (iout % 3 == 0)) PrintAllSpecies(c, ns, mxns, t);
-        if(check_flag(&flag, "ARKStepEvolve", 1)) break;
-        if (tout > RCONST(0.9)) tout += DTOUT; else tout *= TOUT_MULT;
-      }
-
-      /* Print final statistics, and loop for next case */
-      PrintFinalStats(arkode_mem);
-
-    }
+  /* Initialize the fast integrator. Specify the fast right-hand side
+     function in y'=fs(t,y)+ff(t,y) = fse(t,y)+fsi(t,y)+ff(t,y), the inital time T0,
+     and the initial dependent variable vector y. */
+  switch (solve_type) {
+  case(0):
+  case(6):
+  case(7):
+  case(8):  /* erk-3-3 fast solver */
+    inner_arkode_mem = ARKStepCreate(ff, NULL, T0, y, ctx);
+    if (check_retval((void *) inner_arkode_mem, "ARKStepCreate", 0)) return 1;
+    B = ARKodeButcherTable_Alloc(3, SUNTRUE);
+    if (check_retval((void *)B, "ARKodeButcherTable_Alloc", 0)) return 1;
+    B->A[1][0] = RCONST(0.5);
+    B->A[2][0] = -ONE;
+    B->A[2][1] = TWO;
+    B->b[0] = ONE/RCONST(6.0);
+    B->b[1] = TWO/RCONST(3.0);
+    B->b[2] = ONE/RCONST(6.0);
+    B->d[1] = ONE;
+    B->c[1] = RCONST(0.5);
+    B->c[2] = ONE;
+    B->q=3;
+    B->p=2;
+    retval = ARKStepSetTables(inner_arkode_mem, 3, 2, NULL, B);
+    if (check_retval(&retval, "ARKStepSetTables", 1)) return 1;
+    ARKodeButcherTable_Free(B);
+    break;
+  case(1):  /* erk-3-3 fast solver (full problem) */
+    inner_arkode_mem = ARKStepCreate(fn, NULL, T0, y, ctx);
+    if (check_retval((void *) inner_arkode_mem, "ARKStepCreate", 0)) return 1;
+    B = ARKodeButcherTable_Alloc(3, SUNTRUE);
+    if (check_retval((void *)B, "ARKodeButcherTable_Alloc", 0)) return 1;
+    B->A[1][0] = RCONST(0.5);
+    B->A[2][0] = -ONE;
+    B->A[2][1] = TWO;
+    B->b[0] = ONE/RCONST(6.0);
+    B->b[1] = TWO/RCONST(3.0);
+    B->b[2] = ONE/RCONST(6.0);
+    B->d[1] = ONE;
+    B->c[1] = RCONST(0.5);
+    B->c[2] = ONE;
+    B->q=3;
+    B->p=2;
+    retval = ARKStepSetTables(inner_arkode_mem, 3, 2, NULL, B);
+    if (check_retval(&retval, "ARKStepSetTables", 1)) return 1;
+    ARKodeButcherTable_Free(B);
+    break;
+  case(9):
+  case(5):  /* erk-4-4 fast solver */
+    inner_arkode_mem = ARKStepCreate(ff, NULL, T0, y, ctx);
+    if (check_retval((void *) inner_arkode_mem, "ARKStepCreate", 0)) return 1;
+    B = ARKodeButcherTable_Alloc(4, SUNFALSE);
+    if (check_retval((void *)B, "ARKodeButcherTable_Alloc", 0)) return 1;
+    B->A[1][0] = RCONST(0.5);
+    B->A[2][1] = RCONST(0.5);
+    B->A[3][2] = ONE;
+    B->b[0] = ONE/RCONST(6.0);
+    B->b[1] = ONE/RCONST(3.0);
+    B->b[2] = ONE/RCONST(3.0);
+    B->b[3] = ONE/RCONST(6.0);
+    B->c[1] = RCONST(0.5);
+    B->c[2] = RCONST(0.5);
+    B->c[3] = ONE;
+    B->q=4;
+    retval = ARKStepSetTables(inner_arkode_mem, 4, 0, NULL, B);
+    if (check_retval(&retval, "ARKStepSetTables", 1)) return 1;
+    ARKodeButcherTable_Free(B);
+    break;
+  case(2):  /* esdirk-3-3 fast solver (full problem) */
+    inner_arkode_mem = ARKStepCreate(NULL, fn, T0, y, ctx);
+    if (check_retval((void *) inner_arkode_mem, "ARKStepCreate", 0)) return 1;
+    B = ARKodeButcherTable_Alloc(3, SUNFALSE);
+    if (check_retval((void *)B, "ARKodeButcherTable_Alloc", 0)) return 1;
+    beta  = SUNRsqrt(RCONST(3.0))/RCONST(6.0) + RCONST(0.5);
+    gamma = (-ONE/RCONST(8.0))*(SUNRsqrt(RCONST(3.0))+ONE);
+    B->A[1][0] = RCONST(4.0)*gamma+TWO*beta;
+    B->A[1][1] = ONE-RCONST(4.0)*gamma-TWO*beta;
+    B->A[2][0] = RCONST(0.5)-beta-gamma;
+    B->A[2][1] = gamma;
+    B->A[2][2] = beta;
+    B->b[0] = ONE/RCONST(6.0);
+    B->b[1] = ONE/RCONST(6.0);
+    B->b[2] = TWO/RCONST(3.0);
+    B->c[1] = ONE;
+    B->c[2] = RCONST(0.5);
+    B->q=3;
+    retval = ARKStepSetTables(inner_arkode_mem, 3, 0, B, NULL);
+    if (check_retval(&retval, "ARKStepSetTables", 1)) return 1;
+    Af = SUNDenseMatrix(NEQ, NEQ, ctx);
+    if (check_retval((void *)Af, "SUNDenseMatrix", 0)) return 1;
+    LSf = SUNLinSol_Dense(y, Af, ctx);
+    if (check_retval((void *)LSf, "SUNLinSol_Dense", 0)) return 1;
+    retval = ARKStepSetLinearSolver(inner_arkode_mem, LSf, Af);
+    if (check_retval(&retval, "ARKStepSetLinearSolver", 1)) return 1;
+    retval = ARKStepSetJacFn(inner_arkode_mem, Jn);
+    if (check_retval(&retval, "ARKStepSetJacFn", 1)) return 1;
+    retval = ARKStepSStolerances(inner_arkode_mem, reltol, abstol);
+    if (check_retval(&retval, "ARKStepSStolerances", 1)) return 1;
+    ARKodeButcherTable_Free(B);
+    break;
+  case(3):  /* no fast dynamics ('evolve' explicitly w/ erk-3-3) */
+  case(4):
+    inner_arkode_mem = ARKStepCreate(f0, NULL, T0, y, ctx);
+    if (check_retval((void *) inner_arkode_mem, "ARKStepCreate", 0)) return 1;
+    B = ARKodeButcherTable_Alloc(3, SUNTRUE);
+    if (check_retval((void *)B, "ARKodeButcherTable_Alloc", 0)) return 1;
+    B->A[1][0] = RCONST(0.5);
+    B->A[2][0] = -ONE;
+    B->A[2][1] = TWO;
+    B->b[0] = ONE/RCONST(6.0);
+    B->b[1] = TWO/RCONST(3.0);
+    B->b[2] = ONE/RCONST(6.0);
+    B->d[1] = ONE;
+    B->c[1] = RCONST(0.5);
+    B->c[2] = ONE;
+    B->q=3;
+    B->p=2;
+    retval = ARKStepSetTables(inner_arkode_mem, 3, 2, NULL, B);
+    if (check_retval(&retval, "ARKStepSetTables", 1)) return 1;
+    ARKodeButcherTable_Free(B);
   }
 
-  /* Free all memory */
-  ARKStepFree(&arkode_mem);
-  N_VDestroy(c);
-  SUNLinSolFree(LS);
-  FreeUserData(wdata);
-  SUNContext_Free(&ctx);
+  /* Set the user data pointer */
+  retval = ARKStepSetUserData(inner_arkode_mem, (void *) rpar);
+  if (check_retval(&retval, "ARKStepSetUserData", 1)) return 1;
 
+  /* Set the fast step size */
+  retval = ARKStepSetFixedStep(inner_arkode_mem, hf);
+  if (check_retval(&retval, "ARKStepSetFixedStep", 1)) return 1;
+
+  /* Create inner stepper */
+  retval = ARKStepCreateMRIStepInnerStepper(inner_arkode_mem,
+                                            &inner_stepper);
+  if (check_retval(&retval, "ARKStepCreateMRIStepInnerStepper", 1)) return 1;
+
+  /*
+   * Create the slow integrator and set options
+   */
+
+  /* Initialize the slow integrator. Specify the slow right-hand side
+     function in y'=fs(t,y)+ff(t,y) = fse(t,y)+fsi(t,y)+ff(t,y), the inital time
+     T0, the initial dependent variable vector y, and the fast integrator. */
+  switch (solve_type) {
+  case(0):  /* KW3 slow solver */
+    arkode_mem = MRIStepCreate(fs, NULL, T0, y, inner_stepper, ctx);
+    if (check_retval((void *)arkode_mem, "MRIStepCreate", 0)) return 1;
+    C = MRIStepCoupling_LoadTable(ARKODE_MIS_KW3);
+    if (check_retval((void *)C, "MRIStepCoupling_LoadTable", 0)) return 1;
+    retval = MRIStepSetCoupling(arkode_mem, C);
+    if (check_retval(&retval, "MRIStepSetCoupling", 1)) return 1;
+    break;
+  case(3):  /* KW3 slow solver (full problem) */
+    arkode_mem = MRIStepCreate(fn, NULL, T0, y, inner_stepper, ctx);
+    if (check_retval((void *)arkode_mem, "MRIStepCreate", 0)) return 1;
+    C = MRIStepCoupling_LoadTable(ARKODE_MIS_KW3);
+    if (check_retval((void *)C, "MRIStepCoupling_LoadTable", 0)) return 1;
+    retval = MRIStepSetCoupling(arkode_mem, C);
+    if (check_retval(&retval, "MRIStepSetCoupling", 1)) return 1;
+    break;
+  case(5):  /* MRI-GARK-ERK45a slow solver */
+  case(6):
+    arkode_mem = MRIStepCreate(fs, NULL, T0, y, inner_stepper, ctx);
+    if (check_retval((void *)arkode_mem, "MRIStepCreate", 0)) return 1;
+    C = MRIStepCoupling_LoadTable(ARKODE_MRI_GARK_ERK45a);
+    if (check_retval((void*)C, "MRIStepCoupling_LoadTable", 1)) return 1;
+    retval = MRIStepSetCoupling(arkode_mem, C);
+    if (check_retval(&retval, "MRIStepSetCoupling", 1)) return 1;
+    break;
+  case(1):
+  case(2):  /* no slow dynamics (use ERK-2-2) */
+    arkode_mem = MRIStepCreate(f0, NULL, T0, y, inner_stepper, ctx);
+    if (check_retval((void *)arkode_mem, "MRIStepCreate", 0)) return 1;
+    B = ARKodeButcherTable_Alloc(2, SUNFALSE);
+    if (check_retval((void *)B, "ARKodeButcherTable_Alloc", 0)) return 1;
+    B->A[1][0] = TWO/RCONST(3.0);
+    B->b[0] = RCONST(0.25);
+    B->b[1] = RCONST(0.75);
+    B->c[1] = TWO/RCONST(3.0);
+    B->q=2;
+    C = MRIStepCoupling_MIStoMRI(B, 2, 0);
+    if (check_retval((void *)C, "MRIStepCoupling_MIStoMRI", 0)) return 1;
+    retval = MRIStepSetCoupling(arkode_mem, C);
+    if (check_retval(&retval, "MRIStepSetCoupling", 1)) return 1;
+    ARKodeButcherTable_Free(B);
+    break;
+  case(4):  /* dirk-2 (trapezoidal), solve-decoupled slow solver */
+    arkode_mem = MRIStepCreate(NULL, fn, T0, y, inner_stepper, ctx);
+    if (check_retval((void *)arkode_mem, "MRIStepCreate", 0)) return 1;
+    C = MRIStepCoupling_LoadTable(ARKODE_MRI_GARK_IRK21a);
+    if (check_retval((void*)C, "MRIStepCoupling_LoadTable", 1)) return 1;
+    retval = MRIStepSetCoupling(arkode_mem, C);
+    if (check_retval(&retval, "MRIStepSetCoupling", 1)) return 1;
+    As = SUNDenseMatrix(NEQ, NEQ, ctx);
+    if (check_retval((void *)As, "SUNDenseMatrix", 0)) return 1;
+    LSs = SUNLinSol_Dense(y, As, ctx);
+    if (check_retval((void *)LSs, "SUNLinSol_Dense", 0)) return 1;
+    retval = MRIStepSetLinearSolver(arkode_mem, LSs, As);
+    if (check_retval(&retval, "MRIStepSetLinearSolver", 1)) return 1;
+    retval = MRIStepSetJacFn(arkode_mem, Jn);
+    if (check_retval(&retval, "MRIStepSetJacFn", 1)) return 1;
+    retval = MRIStepSStolerances(arkode_mem, reltol, abstol);
+    if (check_retval(&retval, "MRIStepSStolerances", 1)) return 1;
+    break;
+  case(7):  /* MRI-GARK-ESDIRK34a, solve-decoupled slow solver */
+    arkode_mem = MRIStepCreate(NULL, fs, T0, y, inner_stepper, ctx);
+    if (check_retval((void *)arkode_mem, "MRIStepCreate", 0)) return 1;
+    C = MRIStepCoupling_LoadTable(ARKODE_MRI_GARK_ESDIRK34a);
+    if (check_retval((void*)C, "MRIStepCoupling_LoadTable", 1)) return 1;
+    retval = MRIStepSetCoupling(arkode_mem, C);
+    if (check_retval(&retval, "MRIStepSetCoupling", 1)) return 1;
+    As = SUNDenseMatrix(NEQ, NEQ, ctx);
+    if (check_retval((void *)As, "SUNDenseMatrix", 0)) return 1;
+    LSs = SUNLinSol_Dense(y, As, ctx);
+    if (check_retval((void *)LSs, "SUNLinSol_Dense", 0)) return 1;
+    retval = MRIStepSetLinearSolver(arkode_mem, LSs, As);
+    if (check_retval(&retval, "MRIStepSetLinearSolver", 1)) return 1;
+    retval = MRIStepSetJacFn(arkode_mem, Js);
+    if (check_retval(&retval, "MRIStepSetJacFn", 1)) return 1;
+    retval = MRIStepSStolerances(arkode_mem, reltol, abstol);
+    if (check_retval(&retval, "MRIStepSStolerances", 1)) return 1;
+    break;
+  case(8):  /* IMEX-MRI-GARK3b, solve-decoupled slow solver */
+    arkode_mem = MRIStepCreate(fse, fsi, T0, y, inner_stepper, ctx);
+    if (check_retval((void *)arkode_mem, "MRIStepCreate", 0)) return 1;
+    C = MRIStepCoupling_LoadTable(ARKODE_IMEX_MRI_GARK3b);
+    if (check_retval((void *)C, "MRIStepCoupling_LoadTable", 0)) return 1;
+    retval = MRIStepSetCoupling(arkode_mem, C);
+    if (check_retval(&retval, "MRIStepSetCoupling", 1)) return 1;
+    As = SUNDenseMatrix(NEQ, NEQ, ctx);
+    if (check_retval((void *)As, "SUNDenseMatrix", 0)) return 1;
+    LSs = SUNLinSol_Dense(y, As, ctx);
+    if (check_retval((void *)LSs, "SUNLinSol_Dense", 0)) return 1;
+    retval = MRIStepSetLinearSolver(arkode_mem, LSs, As);
+    if (check_retval(&retval, "MRIStepSetLinearSolver", 1)) return 1;
+    retval = MRIStepSetJacFn(arkode_mem, Jsi);
+    if (check_retval(&retval, "MRIStepSetJacFn", 1)) return 1;
+    retval = MRIStepSStolerances(arkode_mem, reltol, abstol);
+    if (check_retval(&retval, "MRIStepSStolerances", 1)) return 1;
+    break;
+  case(9):  /* IMEX-MRI-GARK4, solve-decoupled slow solver */
+    arkode_mem = MRIStepCreate(fse, fsi, T0, y, inner_stepper, ctx);
+    if (check_retval((void *)arkode_mem, "MRIStepCreate", 0)) return 1;
+    C = MRIStepCoupling_LoadTable(ARKODE_IMEX_MRI_GARK4);
+    if (check_retval((void *)C, "MRIStepCoupling_LoadTable", 0)) return 1;
+    retval = MRIStepSetCoupling(arkode_mem, C);
+    if (check_retval(&retval, "MRIStepSetCoupling", 1)) return 1;
+    As = SUNDenseMatrix(NEQ, NEQ, ctx);
+    if (check_retval((void *)As, "SUNDenseMatrix", 0)) return 1;
+    LSs = SUNLinSol_Dense(y, As, ctx);
+    if (check_retval((void *)LSs, "SUNLinSol_Dense", 0)) return 1;
+    retval = MRIStepSetLinearSolver(arkode_mem, LSs, As);
+    if (check_retval(&retval, "MRIStepSetLinearSolver", 1)) return 1;
+    retval = MRIStepSetJacFn(arkode_mem, Jsi);
+    if (check_retval(&retval, "MRIStepSetJacFn", 1)) return 1;
+    retval = MRIStepSStolerances(arkode_mem, reltol, abstol);
+    if (check_retval(&retval, "MRIStepSStolerances", 1)) return 1;
+    break;
+  }
+
+  /* Set the user data pointer */
+  retval = MRIStepSetUserData(arkode_mem, (void *) rpar);
+  if (check_retval(&retval, "MRIStepSetUserData", 1)) return 1;
+
+  retval = MRIStepSetDeduceImplicitRhs(arkode_mem, deduce);
+  if (check_retval(&retval, "MRIStepSetDeduceImplicitRhs", 1)) return 1;
+
+  /* Set the slow step size */
+  retval = MRIStepSetFixedStep(arkode_mem, hs);
+  if (check_retval(&retval, "MRIStepSetFixedStep", 1)) return 1;
+
+  /*
+   * Integrate ODE
+   */
+
+  /* Open output stream for results, output comment line */
+  UFID = fopen("ark_kpr_mri_solution.txt","w");
+  fprintf(UFID,"# t u v uerr verr\n");
+
+  /* output initial condition to disk */
+  fprintf(UFID," %.16"ESYM" %.16"ESYM" %.16"ESYM" %.16"ESYM" %.16"ESYM"\n",
+          T0, NV_Ith_S(y,0), NV_Ith_S(y,1),
+          SUNRabs(NV_Ith_S(y,0)-utrue(T0,rpar)),
+          SUNRabs(NV_Ith_S(y,1)-vtrue(T0,rpar)));
+
+  /* Main time-stepping loop: calls MRIStepEvolve to perform the
+     integration, then prints results. Stops when the final time
+     has been reached */
+  t = T0;
+  tout = T0+dTout;
+  uerr = ZERO;
+  verr = ZERO;
+  uerrtot = ZERO;
+  verrtot = ZERO;
+  errtot  = ZERO;
+  printf("        t           u           v       uerr      verr\n");
+  printf("   ------------------------------------------------------\n");
+  printf("  %10.6"FSYM"  %10.6"FSYM"  %10.6"FSYM"  %.2"ESYM"  %.2"ESYM"\n",
+         t, NV_Ith_S(y,0), NV_Ith_S(y,1), uerr, verr);
+
+  for (iout=0; iout<Nt; iout++) {
+
+    /* call integrator */
+    retval = MRIStepEvolve(arkode_mem, tout, y, &t, ARK_NORMAL);
+    if (check_retval(&retval, "MRIStepEvolve", 1)) break;
+
+    /* access/print solution and error */
+    uerr = SUNRabs(NV_Ith_S(y,0)-utrue(t,rpar));
+    verr = SUNRabs(NV_Ith_S(y,1)-vtrue(t,rpar));
+    printf("  %10.6"FSYM"  %10.6"FSYM"  %10.6"FSYM"  %.2"ESYM"  %.2"ESYM"\n",
+           t, NV_Ith_S(y,0), NV_Ith_S(y,1), uerr, verr);
+    fprintf(UFID," %.16"ESYM" %.16"ESYM" %.16"ESYM" %.16"ESYM" %.16"ESYM"\n",
+            t, NV_Ith_S(y,0), NV_Ith_S(y,1), uerr, verr);
+    uerrtot += uerr*uerr;
+    verrtot += verr*verr;
+    errtot += uerr*uerr + verr*verr;
+
+    /* successful solve: update time */
+    tout += dTout;
+    tout = (tout > Tf) ? Tf : tout;
+  }
+  uerrtot = SUNRsqrt(uerrtot / Nt);
+  verrtot = SUNRsqrt(verrtot / Nt);
+  errtot = SUNRsqrt(errtot / Nt / 2);
+  printf("   ------------------------------------------------------\n");
+  fclose(UFID);
+
+  /*
+   * Finalize
+   */
+
+  /* Get some slow integrator statistics */
+  retval = MRIStepGetNumSteps(arkode_mem, &nsts);
+  check_retval(&retval, "MRIStepGetNumSteps", 1);
+  retval = MRIStepGetNumRhsEvals(arkode_mem, &nfse, &nfsi);
+  check_retval(&retval, "MRIStepGetNumRhsEvals", 1);
+
+  /* Get some fast integrator statistics */
+  retval = ARKStepGetNumSteps(inner_arkode_mem, &nstf);
+  check_retval(&retval, "ARKStepGetNumSteps", 1);
+  retval = ARKStepGetNumRhsEvals(inner_arkode_mem, &nff, &tmp);
+  check_retval(&retval, "ARKStepGetNumRhsEvals", 1);
+
+  /* Print some final statistics */
+  printf("\nFinal Solver Statistics:\n");
+  printf("   Steps: nsts = %li, nstf = %li\n", nsts, nstf);
+  printf("   u error = %.3"ESYM", v error = %.3"ESYM", total error = %.3"ESYM"\n",
+         uerrtot, verrtot, errtot);
+  if (imex_slow) {
+    printf("   Total RHS evals:  Fse = %li, Fsi = %li,  Ff = %li\n", nfse, nfsi, nff);
+  } else if (implicit_slow) {
+    printf("   Total RHS evals:  Fs = %li,  Ff = %li\n", nfsi, nff);
+  }
+  else {
+    printf("   Total RHS evals:  Fs = %li,  Ff = %li\n", nfse, nff);
+  }
+
+  /* Get/print slow integrator decoupled implicit solver statistics */
+  if ((solve_type == 4) || (solve_type == 7) ||
+      (solve_type == 8) || (solve_type == 9)) {
+    retval = MRIStepGetNonlinSolvStats(arkode_mem, &nnis, &nncs);
+    check_retval(&retval, "MRIStepGetNonlinSolvStats", 1);
+    retval = MRIStepGetNumJacEvals(arkode_mem, &njes);
+    check_retval(&retval, "MRIStepGetNumJacEvals", 1);
+    printf("   Slow Newton iters = %li\n", nnis);
+    printf("   Slow Newton conv fails = %li\n", nncs);
+    printf("   Slow Jacobian evals = %li\n", njes);
+  }
+
+  /* Get/print fast integrator implicit solver statistics */
+  if (solve_type == 2) {
+    retval = ARKStepGetNonlinSolvStats(inner_arkode_mem, &nnif, &nncf);
+    check_retval(&retval, "ARKStepGetNonlinSolvStats", 1);
+    retval = ARKStepGetNumJacEvals(inner_arkode_mem, &njef);
+    check_retval(&retval, "ARKStepGetNumJacEvals", 1);
+    printf("   Fast Newton iters = %li\n", nnif);
+    printf("   Fast Newton conv fails = %li\n", nncf);
+    printf("   Fast Jacobian evals = %li\n", njef);
+  }
+
+  /* Clean up and return */
+  N_VDestroy(y);                             /* Free y vector */
+  MRIStepCoupling_Free(C);                   /* free coupling coefficients */
+  SUNMatDestroy(Af);                         /* free fast matrix */
+  SUNLinSolFree(LSf);                        /* free fast linear solver */
+  SUNMatDestroy(As);                         /* free fast matrix */
+  SUNLinSolFree(LSs);                        /* free fast linear solver */
+  ARKStepFree(&inner_arkode_mem);            /* Free fast integrator memory */
+  MRIStepInnerStepper_Free(&inner_stepper);  /* Free inner stepper */
+  MRIStepFree(&arkode_mem);                  /* Free slow integrator memory */
+  SUNContext_Free(&ctx);                     /* Free context */
+
+  return 0;
+}
+
+/* ------------------------------
+ * Functions called by the solver
+ * ------------------------------*/
+
+/* ff routine to compute the fast portion of the ODE RHS. */
+static int ff(realtype t, N_Vector y, N_Vector ydot, void *user_data)
+{
+  realtype *rpar = (realtype *) user_data;
+  const realtype e = rpar[2];
+  const realtype u = NV_Ith_S(y,0);
+  const realtype v = NV_Ith_S(y,1);
+  realtype tmp1, tmp2;
+
+  /* fill in the RHS function:
+     [0  0]*[(-1+u^2-r(t))/(2*u)] + [         0          ]
+     [e -1] [(-2+v^2-s(t))/(2*v)]   [sdot(t)/(2*vtrue(t))] */
+  tmp1 = (-ONE+u*u-r(t,rpar))/(TWO*u);
+  tmp2 = (-TWO+v*v-s(t,rpar))/(TWO*v);
+  NV_Ith_S(ydot,0) = ZERO;
+  NV_Ith_S(ydot,1) = e*tmp1 - tmp2 + sdot(t,rpar)/(TWO*vtrue(t,rpar));
+
+  /* Return with success */
+  return 0;
+}
+
+/* fs routine to compute the slow portion of the ODE RHS. */
+static int fs(realtype t, N_Vector y, N_Vector ydot, void *user_data)
+{
+  realtype *rpar = (realtype *) user_data;
+  const realtype G = rpar[0];
+  const realtype e = rpar[2];
+  const realtype u = NV_Ith_S(y,0);
+  const realtype v = NV_Ith_S(y,1);
+  realtype tmp1, tmp2;
+
+  /* fill in the RHS function:
+     [G e]*[(-1+u^2-r(t))/(2*u))] + [rdot(t)/(2*u)]
+     [0 0] [(-2+v^2-s(t))/(2*v)]    [      0      ] */
+  tmp1 = (-ONE+u*u-r(t,rpar))/(TWO*u);
+  tmp2 = (-TWO+v*v-s(t,rpar))/(TWO*v);
+  NV_Ith_S(ydot,0) = G*tmp1 + e*tmp2 + rdot(t,rpar)/(TWO*u);
+  NV_Ith_S(ydot,1) = ZERO;
+
+  /* Return with success */
+  return 0;
+}
+
+/* fse routine to compute the slow portion of the ODE RHS. */
+static int fse(realtype t, N_Vector y, N_Vector ydot, void *user_data)
+{
+  realtype *rpar = (realtype *) user_data;
+  const realtype u = NV_Ith_S(y,0);
+
+  /* fill in the slow explicit RHS function:
+     [rdot(t)/(2*u)]
+     [      0      ] */
+  NV_Ith_S(ydot,0) = rdot(t,rpar)/(TWO*u);
+  NV_Ith_S(ydot,1) = ZERO;
+
+  /* Return with success */
+  return 0;
+}
+
+/* fsi routine to compute the slow portion of the ODE RHS.(currently same as fse) */
+static int fsi(realtype t, N_Vector y, N_Vector ydot, void *user_data)
+{
+  realtype *rpar = (realtype *) user_data;
+  const realtype G = rpar[0];
+  const realtype e = rpar[2];
+  const realtype u = NV_Ith_S(y,0);
+  const realtype v = NV_Ith_S(y,1);
+  realtype tmp1, tmp2;
+
+  /* fill in the slow implicit RHS function:
+     [G e]*[(-1+u^2-r(t))/(2*u))]
+     [0 0] [(-2+v^2-s(t))/(2*v)]  */
+  tmp1 = (-ONE+u*u-r(t,rpar))/(TWO*u);
+  tmp2 = (-TWO+v*v-s(t,rpar))/(TWO*v);
+  NV_Ith_S(ydot,0) = G*tmp1 + e*tmp2;
+  NV_Ith_S(ydot,1) = ZERO;
+
+  /* Return with success */
+  return 0;
+}
+
+static int fn(realtype t, N_Vector y, N_Vector ydot, void *user_data)
+{
+  realtype *rpar = (realtype *) user_data;
+  const realtype G = rpar[0];
+  const realtype e = rpar[2];
+  const realtype u = NV_Ith_S(y,0);
+  const realtype v = NV_Ith_S(y,1);
+  realtype tmp1, tmp2;
+
+  /* fill in the RHS function:
+     [G e]*[(-1+u^2-r(t))/(2*u))] + [rdot(t)/(2*u)]
+     [e -1] [(-2+v^2-s(t))/(2*v)]   [sdot(t)/(2*vtrue(t))] */
+  tmp1 = (-ONE+u*u-r(t,rpar))/(TWO*u);
+  tmp2 = (-TWO+v*v-s(t,rpar))/(TWO*v);
+  NV_Ith_S(ydot,0) = G*tmp1 + e*tmp2 + rdot(t,rpar)/(TWO*u);
+  NV_Ith_S(ydot,1) = e*tmp1 - tmp2 + sdot(t,rpar)/(TWO*vtrue(t,rpar));
+
+  /* Return with success */
+  return 0;
+}
+
+static int f0(realtype t, N_Vector y, N_Vector ydot, void *user_data)
+{
+  N_VConst(ZERO, ydot);
   return(0);
 }
 
-static WebData AllocUserData(SUNContext ctx)
+static int Js(realtype t, N_Vector y, N_Vector fy, SUNMatrix J, void *user_data,
+              N_Vector tmp1, N_Vector tmp2, N_Vector tmp3)
 {
-  int i, ngrp = NGRP;
-  sunindextype ns = NS;
-  WebData wdata;
+  realtype *rpar = (realtype *) user_data;
+  const realtype G = rpar[0];
+  const realtype e = rpar[2];
+  const realtype u = NV_Ith_S(y,0);
+  const realtype v = NV_Ith_S(y,1);
 
-  wdata = (WebData) malloc(sizeof *wdata);
-  for(i=0; i < ngrp; i++) {
-    (wdata->P)[i] = SUNDlsMat_newDenseMat(ns, ns);
-    (wdata->pivot)[i] = SUNDlsMat_newIndexArray(ns);
-  }
-  wdata->rewt = N_VNew_Serial(NEQ, ctx);
-  wdata->tmp = N_VNew_Serial(NEQ, ctx);
-  return(wdata);
+  /* fill in the Jacobian:
+     [G/2 + (G*(1+r(t))-rdot(t))/(2*u^2)   e/2+e*(2+s(t))/(2*v^2)]
+     [                 0                             0           ] */
+  SM_ELEMENT_D(J,0,0) = G/TWO + (G*(ONE+r(t,rpar))-rdot(t,rpar))/(2*u*u);
+  SM_ELEMENT_D(J,0,1) = e/TWO + e*(TWO+s(t,rpar))/(TWO*v*v);
+  SM_ELEMENT_D(J,1,0) = ZERO;
+  SM_ELEMENT_D(J,1,1) = ZERO;
+
+  /* Return with success */
+  return 0;
 }
 
-static void InitUserData(WebData wdata)
+static int Jsi(realtype t, N_Vector y, N_Vector fy, SUNMatrix J, void *user_data,
+              N_Vector tmp1, N_Vector tmp2, N_Vector tmp3)
 {
-  int i, j, ns;
-  realtype *bcoef, *diff, *cox, *coy, dx, dy;
-  realtype (*acoef)[NS];
+  realtype *rpar = (realtype *) user_data;
+  const realtype G = rpar[0];
+  const realtype e = rpar[2];
+  const realtype u = NV_Ith_S(y,0);
+  const realtype v = NV_Ith_S(y,1);
 
-  acoef = wdata->acoef;
-  bcoef = wdata->bcoef;
-  diff = wdata->diff;
-  cox = wdata->cox;
-  coy = wdata->coy;
-  ns = wdata->ns = NS;
+  /* fill in the Jacobian:
+     [G/2 + (G*(1+r(t)))/(2*u^2)   e/2 + e*(2+s(t))/(2*v^2)]
+     [                 0                       0           ] */
+  SM_ELEMENT_D(J,0,0) = G/TWO + (G*(ONE+r(t,rpar)))/(2*u*u);
+  SM_ELEMENT_D(J,0,1) = e/TWO + e*(TWO+s(t,rpar))/(TWO*v*v);
+  SM_ELEMENT_D(J,1,0) = ZERO;
+  SM_ELEMENT_D(J,1,1) = ZERO;
 
-  for (j = 0; j < NS; j++) { for (i = 0; i < NS; i++) acoef[i][j] = 0.; }
-  for (j = 0; j < NP; j++) {
-    for (i = 0; i < NP; i++) {
-      acoef[NP+i][j] = EE;
-      acoef[i][NP+j] = -GG;
-    }
-    acoef[j][j] = -AA;
-    acoef[NP+j][NP+j] = -AA;
-    bcoef[j] = BB;
-    bcoef[NP+j] = -BB;
-    diff[j] = DPREY;
-    diff[NP+j] = DPRED;
-  }
-
-  /* Set remaining problem parameters */
-
-  wdata->mxns = MXNS;
-  dx = wdata->dx = DX;
-  dy = wdata->dy = DY;
-  for (i = 0; i < ns; i++) {
-    cox[i] = diff[i]/SQR(dx);
-    coy[i] = diff[i]/SQR(dy);
-  }
-
-  /* Set remaining method parameters */
-
-  wdata->mp = MP;
-  wdata->mq = MQ;
-  wdata->mx = MX;
-  wdata->my = MY;
-  wdata->srur = sqrt(UNIT_ROUNDOFF);
-  wdata->mxmp = MXMP;
-  wdata->ngrp = NGRP;
-  wdata->ngx = NGX;
-  wdata->ngy = NGY;
-  SetGroups(MX, NGX, wdata->jgx, wdata->jigx, wdata->jxr);
-  SetGroups(MY, NGY, wdata->jgy, wdata->jigy, wdata->jyr);
+  /* Return with success */
+  return 0;
 }
 
-/*
- This routine sets arrays jg, jig, and jr describing
- a uniform partition of (0,1,2,...,m-1) into ng groups.
- The arrays set are:
-   jg    = length ng+1 array of group boundaries.
-           Group ig has indices j = jg[ig],...,jg[ig+1]-1.
-   jig   = length m array of group indices vs node index.
-           Node index j is in group jig[j].
-   jr    = length ng array of indices representing the groups.
-           The index for group ig is j = jr[ig].
-*/
-static void SetGroups(int m, int ng, int jg[], int jig[], int jr[])
+static int Jn(realtype t, N_Vector y, N_Vector fy, SUNMatrix J, void *user_data,
+              N_Vector tmp1, N_Vector tmp2, N_Vector tmp3)
 {
-  int ig, j, len1, mper, ngm1;
+  realtype *rpar = (realtype *) user_data;
+  const realtype G = rpar[0];
+  const realtype e = rpar[2];
+  const realtype u = NV_Ith_S(y,0);
+  const realtype v = NV_Ith_S(y,1);
 
-  mper = m/ng; /* does integer division */
-  for (ig=0; ig < ng; ig++) jg[ig] = ig*mper;
-  jg[ng] = m;
+  /* fill in the Jacobian:
+     [G/2 + (G*(1+r(t))-rdot(t))/(2*u^2)     e/2 + e*(2+s(t))/(2*v^2)]
+     [e/2+e*(1+r(t))/(2*u^2)                -1/2 - (2+s(t))/(2*v^2)  ] */
+  SM_ELEMENT_D(J,0,0) = G/TWO + (G*(ONE+r(t,rpar))-rdot(t,rpar))/(2*u*u);
+  SM_ELEMENT_D(J,0,1) = e/TWO + e*(TWO+s(t,rpar))/(TWO*v*v);
+  SM_ELEMENT_D(J,1,0) = e/TWO + e*(ONE+r(t,rpar))/(TWO*u*u);
+  SM_ELEMENT_D(J,1,1) = -ONE/TWO - (TWO+s(t,rpar))/(TWO*v*v);
 
-  ngm1 = ng - 1;
-  len1 = ngm1*mper;
-  for (j = 0; j < len1; j++) jig[j] = j/mper;
-  for (j = len1; j < m; j++) jig[j] = ngm1;
-
-  for (ig = 0; ig < ngm1; ig++) jr[ig] = ((2*ig+1)*mper-1)/2;
-  jr[ngm1] = (ngm1*mper+m-1)/2;
+  /* Return with success */
+  return 0;
 }
 
-/* This routine computes and loads the vector of initial values. */
-static void CInit(N_Vector c, WebData wdata)
+
+/* ------------------------------
+ * Private helper functions
+ * ------------------------------*/
+
+static realtype r(realtype t, void *user_data)
 {
-  int jx, jy, ns, mxns, ioff, iyoff, i, ici;
-  realtype argx, argy, x, y, dx, dy, x_factor, y_factor, *cdata;
-
-  cdata = N_VGetArrayPointer(c);
-  ns = wdata->ns;
-  mxns = wdata->mxns;
-  dx = wdata->dx;
-  dy = wdata->dy;
-
-  x_factor = RCONST(4.0)/SQR(AX);
-  y_factor = RCONST(4.0)/SQR(AY);
-  for (jy = 0; jy < MY; jy++) {
-    y = jy*dy;
-    argy = SQR(y_factor*y*(AY-y));
-    iyoff = mxns*jy;
-    for (jx = 0; jx < MX; jx++) {
-      x = jx*dx;
-      argx = SQR(x_factor*x*(AX-x));
-      ioff = iyoff + ns*jx;
-      for (i = 1; i <= ns; i++) {
-        ici = ioff + i-1;
-        cdata[ici] = RCONST(10.0) + i*argx*argy;
-      }
-    }
-  }
+  return( RCONST(0.5)*cos(t) );
 }
-
-static void PrintIntro(void)
+static realtype s(realtype t, void *user_data)
 {
-  printf("\n\nDemonstration program for ARKODE - SPGMR linear solver\n\n");
-  printf("Food web problem with ns species, ns = %d\n", NS);
-  printf("Predator-prey interaction and diffusion on a 2-D square\n\n");
-#if defined(SUNDIALS_EXTENDED_PRECISION)
-  printf("Matrix parameters: a = %.2Lg   e = %.2Lg   g = %.2Lg\n",
-         AA, EE, GG);
-  printf("b parameter = %.2Lg\n", BB);
-  printf("Diffusion coefficients: Dprey = %.2Lg   Dpred = %.2Lg\n",
-         DPREY, DPRED);
-  printf("Rate parameter alpha = %.2Lg\n\n", ALPH);
-#elif defined(SUNDIALS_DOUBLE_PRECISION)
-  printf("Matrix parameters: a = %.2g   e = %.2g   g = %.2g\n",
-         AA, EE, GG);
-  printf("b parameter = %.2g\n", BB);
-  printf("Diffusion coefficients: Dprey = %.2g   Dpred = %.2g\n",
-         DPREY, DPRED);
-  printf("Rate parameter alpha = %.2g\n\n", ALPH);
-#else
-  printf("Matrix parameters: a = %.2g   e = %.2g   g = %.2g\n",
-         AA, EE, GG);
-  printf("b parameter = %.2g\n", BB);
-  printf("Diffusion coefficients: Dprey = %.2g   Dpred = %.2g\n",
-         DPREY, DPRED);
-  printf("Rate parameter alpha = %.2g\n\n", ALPH);
-#endif
-  printf("Mesh dimensions (mx,my) are %d, %d.  ", MX, MY);
-  printf("Total system size is neq = %d \n\n", NEQ);
-#if defined(SUNDIALS_EXTENDED_PRECISION)
-  printf("Tolerances: reltol = %.2Lg, abstol = %.2Lg \n\n",
-         RTOL, ATOL);
-#elif defined(SUNDIALS_DOUBLE_PRECISION)
-  printf("Tolerances: reltol = %.2g, abstol = %.2g \n\n",
-         RTOL, ATOL);
-#else
-  printf("Tolerances: reltol = %.2g, abstol = %.2g \n\n",
-         RTOL, ATOL);
-#endif
-  printf("Preconditioning uses a product of:\n");
-  printf("  (1) Gauss-Seidel iterations with ");
-  printf("itmax = %d iterations, and\n", ITMAX);
-  printf("  (2) interaction-only block-diagonal matrix ");
-  printf("with block-grouping\n");
-  printf("  Number of diagonal block groups = ngrp = %d", NGRP);
-  printf("  (ngx by ngy, ngx = %d, ngy = %d)\n", NGX, NGY);
-  printf("\n\n--------------------------------------------------------------");
-  printf("--------------\n");
+  realtype *rpar = (realtype *) user_data;
+  return( cos(rpar[1]*t) );
 }
-
-static void PrintHeader(int jpre, int gstype)
+static realtype rdot(realtype t, void *user_data)
 {
-  if(jpre == SUN_PREC_LEFT)
-    printf("\n\nPreconditioner type is           jpre = %s\n", "SUN_PREC_LEFT");
-  else
-    printf("\n\nPreconditioner type is           jpre = %s\n", "SUN_PREC_RIGHT");
-
-  if(gstype == SUN_MODIFIED_GS)
-    printf("\nGram-Schmidt method type is    gstype = %s\n\n\n", "SUN_MODIFIED_GS");
-  else
-    printf("\nGram-Schmidt method type is    gstype = %s\n\n\n", "SUN_CLASSICAL_GS");
+  return( -RCONST(0.5)*sin(t) );
 }
-
-static void PrintAllSpecies(N_Vector c, int ns, int mxns, realtype t)
+static realtype sdot(realtype t, void *user_data)
 {
-  int i, jx ,jy;
-  realtype *cdata;
-
-  cdata = N_VGetArrayPointer(c);
-#if defined(SUNDIALS_EXTENDED_PRECISION)
-  printf("c values at t = %Lg:\n\n", t);
-#elif defined(SUNDIALS_DOUBLE_PRECISION)
-  printf("c values at t = %g:\n\n", t);
-#else
-  printf("c values at t = %g:\n\n", t);
-#endif
-  for (i=1; i <= ns; i++) {
-    printf("Species %d\n", i);
-    for (jy=MY-1; jy >= 0; jy--) {
-      for (jx=0; jx < MX; jx++) {
-#if defined(SUNDIALS_EXTENDED_PRECISION)
-        printf("%-10.6Lg", cdata[(i-1) + jx*ns + jy*mxns]);
-#elif defined(SUNDIALS_DOUBLE_PRECISION)
-        printf("%-10.6g", cdata[(i-1) + jx*ns + jy*mxns]);
-#else
-        printf("%-10.6g", cdata[(i-1) + jx*ns + jy*mxns]);
-#endif
-      }
-      printf("\n");
-    }
-    printf("\n");
-  }
+  realtype *rpar = (realtype *) user_data;
+  return( -rpar[1]*sin(rpar[1]*t) );
 }
-
-static void PrintOutput(void *arkode_mem, realtype t)
+static realtype utrue(realtype t, void *user_data)
 {
-  long int nst, nfe, nfi, nni;
-  int flag;
-  realtype hu;
-
-  flag = ARKStepGetNumSteps(arkode_mem, &nst);
-  check_flag(&flag, "ARKStepGetNumSteps", 1);
-  flag = ARKStepGetNumRhsEvals(arkode_mem, &nfe, &nfi);
-  check_flag(&flag, "ARKStepGetNumRhsEvals", 1);
-  flag = ARKStepGetNumNonlinSolvIters(arkode_mem, &nni);
-  check_flag(&flag, "ARKStepGetNumNonlinSolvIters", 1);
-  flag = ARKStepGetLastStep(arkode_mem, &hu);
-  check_flag(&flag, "ARKStepGetLastStep", 1);
-
-#if defined(SUNDIALS_EXTENDED_PRECISION)
-  printf("t = %10.2Le  nst = %ld  nfe = %ld  nfi = %ld  nni = %ld", t, nst, nfe, nfi, nni);
-  printf("  hu = %11.2Le\n\n", hu);
-#elif defined(SUNDIALS_DOUBLE_PRECISION)
-  printf("t = %10.2e  nst = %ld  nfe = %ld  nfi = %ld  nni = %ld", t, nst, nfe, nfi, nni);
-  printf("  hu = %11.2e\n\n", hu);
-#else
-  printf("t = %10.2e  nst = %ld  nfe = %ld  nfi = %ld  nni = %ld", t, nst, nfe, nfi, nni);
-  printf("  hu = %11.2e\n\n", hu);
-#endif
+  return( SUNRsqrt(ONE+r(t,user_data)) );
 }
-
-static void PrintFinalStats(void *arkode_mem)
+static realtype vtrue(realtype t, void *user_data)
 {
-  long int lenrw, leniw ;
-  long int lenrwLS, leniwLS;
-  long int nst, nfe, nfi, nsetups, nni, ncfn, netf;
-  long int nli, npe, nps, ncfl, nfeLS;
-  int flag;
-  realtype avdim;
-
-  flag = ARKStepGetWorkSpace(arkode_mem, &lenrw, &leniw);
-  check_flag(&flag, "ARKStepGetWorkSpace", 1);
-  flag = ARKStepGetNumSteps(arkode_mem, &nst);
-  check_flag(&flag, "ARKStepGetNumSteps", 1);
-  flag = ARKStepGetNumRhsEvals(arkode_mem, &nfe, &nfi);
-  check_flag(&flag, "ARKStepGetNumRhsEvals", 1);
-  flag = ARKStepGetNumLinSolvSetups(arkode_mem, &nsetups);
-  check_flag(&flag, "ARKStepGetNumLinSolvSetups", 1);
-  flag = ARKStepGetNumErrTestFails(arkode_mem, &netf);
-  check_flag(&flag, "ARKStepGetNumErrTestFails", 1);
-  flag = ARKStepGetNumNonlinSolvIters(arkode_mem, &nni);
-  check_flag(&flag, "ARKStepGetNumNonlinSolvIters", 1);
-  flag = ARKStepGetNumNonlinSolvConvFails(arkode_mem, &ncfn);
-  check_flag(&flag, "ARKStepGetNumNonlinSolvConvFails", 1);
-
-  flag = ARKStepGetLinWorkSpace(arkode_mem, &lenrwLS, &leniwLS);
-  check_flag(&flag, "ARKStepGetLinWorkSpace", 1);
-  flag = ARKStepGetNumLinIters(arkode_mem, &nli);
-  check_flag(&flag, "ARKStepGetNumLinIters", 1);
-  flag = ARKStepGetNumPrecEvals(arkode_mem, &npe);
-  check_flag(&flag, "ARKStepGetNumPrecEvals", 1);
-  flag = ARKStepGetNumPrecSolves(arkode_mem, &nps);
-  check_flag(&flag, "ARKStepGetNumPrecSolves", 1);
-  flag = ARKStepGetNumLinConvFails(arkode_mem, &ncfl);
-  check_flag(&flag, "ARKStepGetNumLinConvFails", 1);
-  flag = ARKStepGetNumLinRhsEvals(arkode_mem, &nfeLS);
-  check_flag(&flag, "ARKStepGetNumLinRhsEvals", 1);
-
-  printf("\n\n Final statistics for this run:\n\n");
-  printf(" ARKStep real workspace length         = %4ld \n", lenrw);
-  printf(" ARKStep integer workspace length      = %4ld \n", leniw);
-  printf(" ARKLS real workspace length           = %4ld \n", lenrwLS);
-  printf(" ARKLS integer workspace length        = %4ld \n", leniwLS);
-  printf(" Number of steps                       = %4ld \n", nst);
-  printf(" Number of f-s (explicit)              = %4ld \n", nfe);
-  printf(" Number of f-s (implicit)              = %4ld \n", nfi);
-  printf(" Number of f-s (SPGMR)                 = %4ld \n", nfeLS);
-  printf(" Number of f-s (TOTAL)                 = %4ld \n", nfe + nfeLS);
-  printf(" Number of setups                      = %4ld \n", nsetups);
-  printf(" Number of nonlinear iterations        = %4ld \n", nni);
-  printf(" Number of linear iterations           = %4ld \n", nli);
-  printf(" Number of preconditioner evaluations  = %4ld \n", npe);
-  printf(" Number of preconditioner solves       = %4ld \n", nps);
-  printf(" Number of error test failures         = %4ld \n", netf);
-  printf(" Number of nonlinear conv. failures    = %4ld \n", ncfn);
-  printf(" Number of linear convergence failures = %4ld \n", ncfl);
-  avdim = (nni > 0) ? ((realtype)nli)/((realtype)nni) : ZERO;
-#if defined(SUNDIALS_EXTENDED_PRECISION)
-  printf(" Average Krylov subspace dimension     = %.3Lf \n", avdim);
-#else
-  printf(" Average Krylov subspace dimension     = %.3f \n", avdim);
-#endif
-  printf("\n\n--------------------------------------------------------------");
-  printf("--------------\n");
-  printf(    "--------------------------------------------------------------");
-  printf("--------------\n");
+  return( SUNRsqrt(TWO+s(t,user_data)) );
 }
-
-static void FreeUserData(WebData wdata)
+static int Ytrue(realtype t, N_Vector y, void *user_data)
 {
-  int i, ngrp;
-
-  ngrp = wdata->ngrp;
-  for(i=0; i < ngrp; i++) {
-    SUNDlsMat_destroyMat((wdata->P)[i]);
-    SUNDlsMat_destroyArray((wdata->pivot)[i]);
-  }
-  N_VDestroy(wdata->rewt);
-  N_VDestroy(wdata->tmp);
-  free(wdata);
-}
-
-/*
- This routine computes the right-hand side of the ODE system and
- returns it in cdot. The interaction rates are computed by calls to WebRates,
- and these are saved in fsave for use in preconditioning.
-*/
-static int f(realtype t, N_Vector c, N_Vector cdot,void *user_data)
-{
-  int i, ic, ici, idxl, idxu, jx, ns, mxns, iyoff, jy, idyu, idyl;
-  realtype dcxli, dcxui, dcyli, dcyui, x, y, *cox, *coy, *fsave, dx, dy;
-  realtype *cdata, *cdotdata;
-  WebData wdata;
-
-  wdata = (WebData) user_data;
-  cdata = N_VGetArrayPointer(c);
-  cdotdata = N_VGetArrayPointer(cdot);
-
-  mxns = wdata->mxns;
-  ns = wdata->ns;
-  fsave = wdata->fsave;
-  cox = wdata->cox;
-  coy = wdata->coy;
-  mxns = wdata->mxns;
-  dx = wdata->dx;
-  dy = wdata->dy;
-
-  for (jy = 0; jy < MY; jy++) {
-    y = jy*dy;
-    iyoff = mxns*jy;
-    idyu = (jy == MY-1) ? -mxns : mxns;
-    idyl = (jy == 0) ? -mxns : mxns;
-    for (jx = 0; jx < MX; jx++) {
-      x = jx*dx;
-      ic = iyoff + ns*jx;
-      /* Get interaction rates at one point (x,y). */
-      WebRates(x, y, t, cdata+ic, fsave+ic, wdata);
-      idxu = (jx == MX-1) ? -ns : ns;
-      idxl = (jx == 0) ? -ns : ns;
-      for (i = 1; i <= ns; i++) {
-        ici = ic + i-1;
-        /* Do differencing in y. */
-        dcyli = cdata[ici] - cdata[ici-idyl];
-        dcyui = cdata[ici+idyu] - cdata[ici];
-        /* Do differencing in x. */
-        dcxli = cdata[ici] - cdata[ici-idxl];
-        dcxui = cdata[ici+idxu] - cdata[ici];
-        /* Collect terms and load cdot elements. */
-        cdotdata[ici] = coy[i-1]*(dcyui - dcyli) + cox[i-1]*(dcxui - dcxli) +
-          fsave[ici];
-      }
-    }
-  }
-
+  NV_Ith_S(y,0) = utrue(t,user_data);
+  NV_Ith_S(y,1) = vtrue(t,user_data);
   return(0);
 }
 
-/*
-  This routine computes the interaction rates for the species
-  c_1, ... ,c_ns (stored in c[0],...,c[ns-1]), at one spatial point
-  and at time t.
-*/
-static void WebRates(realtype x, realtype y, realtype t, realtype c[],
-                     realtype rate[], WebData wdata)
-{
-  int i, j, ns;
-  realtype fac, *bcoef;
-  realtype (*acoef)[NS];
-
-  ns = wdata->ns;
-  acoef = wdata->acoef;
-  bcoef = wdata->bcoef;
-
-  for (i = 0; i < ns; i++)
-    rate[i] = ZERO;
-
-  for (j = 0; j < ns; j++)
-    for (i = 0; i < ns; i++)
-      rate[i] += c[j] * acoef[i][j];
-
-  fac = ONE + ALPH*x*y;
-  for (i = 0; i < ns; i++)
-    rate[i] = c[i]*(bcoef[i]*fac + rate[i]);
-}
-
-/*
- This routine generates the block-diagonal part of the Jacobian
- corresponding to the interaction rates, multiplies by -gamma, adds
- the identity matrix, and calls SUNDlsMat_denseGETRF to do the LU decomposition of
- each diagonal block. The computation of the diagonal blocks uses
- the preset block and grouping information. One block per group is
- computed. The Jacobian elements are generated by difference
- quotients using calls to the routine fblock.
-
- This routine can be regarded as a prototype for the general case
- of a block-diagonal preconditioner. The blocks are of size mp, and
- there are ngrp=ngx*ngy blocks computed in the block-grouping scheme.
-*/
-static int Precond(realtype t, N_Vector c, N_Vector fc, booleantype jok,
-                   booleantype *jcurPtr, realtype gamma, void *user_data)
-{
-  realtype ***P;
-  sunindextype ier;
-  sunindextype **pivot;
-  int i, if0, if00, ig, igx, igy, j, jj, jx, jy;
-  int *jxr, *jyr, ngrp, ngx, ngy, mxmp, mp, flag;
-  realtype uround, fac, r, r0, save, srur;
-  realtype *f1, *fsave, *cdata, *rewtdata;
-  WebData wdata;
-  void *arkode_mem;
-  N_Vector rewt;
-
-  wdata = (WebData) user_data;
-  arkode_mem = wdata->arkode_mem;
-  cdata = N_VGetArrayPointer(c);
-  rewt = wdata->rewt;
-  flag = ARKStepGetErrWeights(arkode_mem, rewt);
-  if(check_flag(&flag, "ARKStepGetErrWeights", 1)) return(1);
-  rewtdata = N_VGetArrayPointer(rewt);
-
-  uround = UNIT_ROUNDOFF;
-
-  P = wdata->P;
-  pivot = wdata->pivot;
-  jxr = wdata->jxr;
-  jyr = wdata->jyr;
-  mp = wdata->mp;
-  srur = wdata->srur;
-  ngrp = wdata->ngrp;
-  ngx = wdata->ngx;
-  ngy = wdata->ngy;
-  mxmp = wdata->mxmp;
-  fsave = wdata->fsave;
-
-  /* Make mp calls to fblock to approximate each diagonal block of Jacobian.
-     Here, fsave contains the base value of the rate vector and
-     r0 is a minimum increment factor for the difference quotient. */
-
-  f1 = N_VGetArrayPointer(wdata->tmp);
-
-  fac = N_VWrmsNorm (fc, rewt);
-  r0 = RCONST(1000.0)*fabs(gamma)*uround*NEQ*fac;
-  if (r0 == ZERO) r0 = ONE;
-
-  for (igy = 0; igy < ngy; igy++) {
-    jy = jyr[igy];
-    if00 = jy*mxmp;
-    for (igx = 0; igx < ngx; igx++) {
-      jx = jxr[igx];
-      if0 = if00 + jx*mp;
-      ig = igx + igy*ngx;
-      /* Generate ig-th diagonal block */
-      for (j = 0; j < mp; j++) {
-        /* Generate the jth column as a difference quotient */
-        jj = if0 + j;
-        save = cdata[jj];
-        r = std::max(srur*fabs(save),r0/rewtdata[jj]);
-        cdata[jj] += r;
-        fac = -gamma/r;
-        fblock (t, cdata, jx, jy, f1, wdata);
-        for (i = 0; i < mp; i++) {
-          P[ig][j][i] = (f1[i] - fsave[if0+i])*fac;
-        }
-        cdata[jj] = save;
-      }
-    }
-  }
-
-  /* Add identity matrix and do LU decompositions on blocks. */
-
-  for (ig = 0; ig < ngrp; ig++) {
-    SUNDlsMat_denseAddIdentity(P[ig], mp);
-    ier = SUNDlsMat_denseGETRF(P[ig], mp, mp, pivot[ig]);
-    if (ier != 0) return(1);
-  }
-
-  *jcurPtr = SUNTRUE;
-  return(0);
-}
-
-/*
-  This routine computes one block of the interaction terms of the
-  system, namely block (jx,jy), for use in preconditioning.
-  Here jx and jy count from 0.
-*/
-static void fblock(realtype t, realtype cdata[], int jx, int jy,
-                   realtype cdotdata[], WebData wdata)
-{
-  int iblok, ic;
-  realtype x, y;
-
-  iblok = jx + jy*(wdata->mx);
-  y = jy*(wdata->dy);
-  x = jx*(wdata->dx);
-  ic = (wdata->ns)*(iblok);
-  WebRates(x, y, t, cdata+ic, cdotdata, wdata);
-}
-
-/*
-  This routine applies two inverse preconditioner matrices
-  to the vector r, using the interaction-only block-diagonal Jacobian
-  with block-grouping, denoted Jr, and Gauss-Seidel applied to the
-  diffusion contribution to the Jacobian, denoted Jd.
-  It first calls GSIter for a Gauss-Seidel approximation to
-  ((I - gamma*Jd)-inverse)*r, and stores the result in z.
-  Then it computes ((I - gamma*Jr)-inverse)*z, using LU factors of the
-  blocks in P, and pivot information in pivot, and returns the result in z.
-*/
-static int PSolve(realtype tn, N_Vector c, N_Vector fc, N_Vector r, N_Vector z,
-                  realtype gamma, realtype delta, int lr, void *user_data)
-{
-  realtype   ***P;
-  sunindextype **pivot;
-  int jx, jy, igx, igy, iv, ig, *jigx, *jigy, mx, my, ngx, mp;
-  WebData wdata;
-
-  wdata = (WebData) user_data;
-
-  N_VScale(ONE, r, z);
-
-  /* call GSIter for Gauss-Seidel iterations */
-
-  GSIter(gamma, z, wdata->tmp, wdata);
-
-  /* Do backsolves for inverse of block-diagonal preconditioner factor */
-
-  P = wdata->P;
-  pivot = wdata->pivot;
-  mx = wdata->mx;
-  my = wdata->my;
-  ngx = wdata->ngx;
-  mp = wdata->mp;
-  jigx = wdata->jigx;
-  jigy = wdata->jigy;
-
-  iv = 0;
-  for (jy = 0; jy < my; jy++) {
-    igy = jigy[jy];
-    for (jx = 0; jx < mx; jx++) {
-      igx = jigx[jx];
-      ig = igx + igy*ngx;
-      SUNDlsMat_denseGETRS(P[ig], mp, pivot[ig], &(N_VGetArrayPointer(z)[iv]));
-      iv += mp;
-    }
-  }
-
-  return(0);
-}
-
-/*
-  This routine performs ITMAX=5 Gauss-Seidel iterations to compute an
-  approximation to (P-inverse)*z, where P = I - gamma*Jd, and
-  Jd represents the diffusion contributions to the Jacobian.
-  The answer is stored in z on return, and x is a temporary vector.
-  The dimensions below assume a global constant NS >= ns.
-  Some inner loops of length ns are implemented with the small
-  vector kernels v_sum_prods, v_prod, v_inc_by_prod.
-*/
-static void GSIter(realtype gamma, N_Vector z, N_Vector x, WebData wdata)
-{
-  int jx, jy, mx, my, x_loc, y_loc;
-  int ns, mxns, i, iyoff, ic, iter;
-  realtype beta[NS], beta2[NS], cof1[NS], gam[NS], gam2[NS];
-  realtype temp, *cox, *coy, *xd, *zd;
-
-  xd = N_VGetArrayPointer(x);
-  zd = N_VGetArrayPointer(z);
-  ns = wdata->ns;
-  mx = wdata->mx;
-  my = wdata->my;
-  mxns = wdata->mxns;
-  cox = wdata->cox;
-  coy = wdata->coy;
-
-  /* Write matrix as P = D - L - U.
-     Load local arrays beta, beta2, gam, gam2, and cof1. */
-
-  for (i = 0; i < ns; i++) {
-    temp = ONE/(ONE + RCONST(2.0)*gamma*(cox[i] + coy[i]));
-    beta[i] = gamma*cox[i]*temp;
-    beta2[i] = RCONST(2.0)*beta[i];
-    gam[i] = gamma*coy[i]*temp;
-    gam2[i] = RCONST(2.0)*gam[i];
-    cof1[i] = temp;
-  }
-
-  /* Begin iteration loop.
-     Load vector x with (D-inverse)*z for first iteration. */
-
-  for (jy = 0; jy < my; jy++) {
-    iyoff = mxns*jy;
-    for (jx = 0; jx < mx; jx++) {
-      ic = iyoff + ns*jx;
-      v_prod(xd+ic, cof1, zd+ic, ns); /* x[ic+i] = cof1[i]z[ic+i] */
-    }
-  }
-  N_VConst(ZERO, z);
-
-  /* Looping point for iterations. */
-
-  for (iter=1; iter <= ITMAX; iter++) {
-
-    /* Calculate (D-inverse)*U*x if not the first iteration. */
-
-    if (iter > 1) {
-      for (jy=0; jy < my; jy++) {
-        iyoff = mxns*jy;
-        for (jx=0; jx < mx; jx++) { /* order of loops matters */
-          ic = iyoff + ns*jx;
-          x_loc = (jx == 0) ? 0 : ((jx == mx-1) ? 2 : 1);
-          y_loc = (jy == 0) ? 0 : ((jy == my-1) ? 2 : 1);
-          switch (3*y_loc+x_loc) {
-          case 0 :
-            /* jx == 0, jy == 0 */
-            /* x[ic+i] = beta2[i]x[ic+ns+i] + gam2[i]x[ic+mxns+i] */
-            v_sum_prods(xd+ic, beta2, xd+ic+ns, gam2, xd+ic+mxns, ns);
-            break;
-          case 1 :
-            /* 1 <= jx <= mx-2, jy == 0 */
-            /* x[ic+i] = beta[i]x[ic+ns+i] + gam2[i]x[ic+mxns+i] */
-            v_sum_prods(xd+ic, beta, xd+ic+ns, gam2, xd+ic+mxns, ns);
-            break;
-          case 2 :
-            /* jx == mx-1, jy == 0 */
-            /* x[ic+i] = gam2[i]x[ic+mxns+i] */
-            v_prod(xd+ic, gam2, xd+ic+mxns, ns);
-            break;
-          case 3 :
-            /* jx == 0, 1 <= jy <= my-2 */
-            /* x[ic+i] = beta2[i]x[ic+ns+i] + gam[i]x[ic+mxns+i] */
-            v_sum_prods(xd+ic, beta2, xd+ic+ns, gam, xd+ic+mxns, ns);
-            break;
-          case 4 :
-            /* 1 <= jx <= mx-2, 1 <= jy <= my-2 */
-            /* x[ic+i] = beta[i]x[ic+ns+i] + gam[i]x[ic+mxns+i] */
-            v_sum_prods(xd+ic, beta, xd+ic+ns, gam, xd+ic+mxns, ns);
-            break;
-          case 5 :
-            /* jx == mx-1, 1 <= jy <= my-2 */
-            /* x[ic+i] = gam[i]x[ic+mxns+i] */
-            v_prod(xd+ic, gam, xd+ic+mxns, ns);
-            break;
-          case 6 :
-            /* jx == 0, jy == my-1 */
-            /* x[ic+i] = beta2[i]x[ic+ns+i] */
-            v_prod(xd+ic, beta2, xd+ic+ns, ns);
-            break;
-          case 7 :
-            /* 1 <= jx <= mx-2, jy == my-1 */
-            /* x[ic+i] = beta[i]x[ic+ns+i] */
-            v_prod(xd+ic, beta, xd+ic+ns, ns);
-            break;
-          case 8 :
-            /* jx == mx-1, jy == my-1 */
-            /* x[ic+i] = 0.0 */
-            v_zero(xd+ic, ns);
-            break;
-          }
-        }
-      }
-    }  /* end if (iter > 1) */
-
-    /* Overwrite x with [(I - (D-inverse)*L)-inverse]*x. */
-
-    for (jy=0; jy < my; jy++) {
-      iyoff = mxns*jy;
-      for (jx=0; jx < mx; jx++) { /* order of loops matters */
-        ic = iyoff + ns*jx;
-        x_loc = (jx == 0) ? 0 : ((jx == mx-1) ? 2 : 1);
-        y_loc = (jy == 0) ? 0 : ((jy == my-1) ? 2 : 1);
-        switch (3*y_loc+x_loc) {
-        case 0 :
-          /* jx == 0, jy == 0 */
-          break;
-        case 1 :
-          /* 1 <= jx <= mx-2, jy == 0 */
-          /* x[ic+i] += beta[i]x[ic-ns+i] */
-          v_inc_by_prod(xd+ic, beta, xd+ic-ns, ns);
-          break;
-        case 2 :
-          /* jx == mx-1, jy == 0 */
-          /* x[ic+i] += beta2[i]x[ic-ns+i] */
-          v_inc_by_prod(xd+ic, beta2, xd+ic-ns, ns);
-          break;
-        case 3 :
-          /* jx == 0, 1 <= jy <= my-2 */
-          /* x[ic+i] += gam[i]x[ic-mxns+i] */
-          v_inc_by_prod(xd+ic, gam, xd+ic-mxns, ns);
-          break;
-        case 4 :
-          /* 1 <= jx <= mx-2, 1 <= jy <= my-2 */
-          /* x[ic+i] += beta[i]x[ic-ns+i] + gam[i]x[ic-mxns+i] */
-          v_inc_by_prod(xd+ic, beta, xd+ic-ns, ns);
-          v_inc_by_prod(xd+ic, gam, xd+ic-mxns, ns);
-          break;
-        case 5 :
-          /* jx == mx-1, 1 <= jy <= my-2 */
-          /* x[ic+i] += beta2[i]x[ic-ns+i] + gam[i]x[ic-mxns+i] */
-          v_inc_by_prod(xd+ic, beta2, xd+ic-ns, ns);
-          v_inc_by_prod(xd+ic, gam, xd+ic-mxns, ns);
-          break;
-        case 6 :
-          /* jx == 0, jy == my-1 */
-          /* x[ic+i] += gam2[i]x[ic-mxns+i] */
-          v_inc_by_prod(xd+ic, gam2, xd+ic-mxns, ns);
-          break;
-        case 7 :
-          /* 1 <= jx <= mx-2, jy == my-1 */
-          /* x[ic+i] += beta[i]x[ic-ns+i] + gam2[i]x[ic-mxns+i] */
-          v_inc_by_prod(xd+ic, beta, xd+ic-ns, ns);
-          v_inc_by_prod(xd+ic, gam2, xd+ic-mxns, ns);
-          break;
-        case 8 :
-          /* jx == mx-1, jy == my-1 */
-          /* x[ic+i] += beta2[i]x[ic-ns+i] + gam2[i]x[ic-mxns+i] */
-          v_inc_by_prod(xd+ic, beta2, xd+ic-ns, ns);
-          v_inc_by_prod(xd+ic, gam2, xd+ic-mxns, ns);
-          break;
-        }
-      }
-    }
-
-    /* Add increment x to z : z <- z+x */
-
-    N_VLinearSum(ONE, z, ONE, x, z);
-
-  }
-}
-
-static void v_inc_by_prod(realtype u[], realtype v[], realtype w[], int n)
-{
-  int i;
-  for (i=0; i < n; i++) u[i] += v[i]*w[i];
-}
-
-static void v_sum_prods(realtype u[], realtype p[], realtype q[],
-                        realtype v[], realtype w[], int n)
-{
-  int i;
-  for (i=0; i < n; i++) u[i] = p[i]*q[i] + v[i]*w[i];
-}
-
-static void v_prod(realtype u[], realtype v[], realtype w[], int n)
-{
-  int i;
-  for (i=0; i < n; i++) u[i] = v[i]*w[i];
-}
-
-static void v_zero(realtype u[], int n)
-{
-  int i;
-  for (i=0; i < n; i++) u[i] = ZERO;
-}
 
 /* Check function return value...
-     opt == 0 means SUNDIALS function allocates memory so check if
-              returned NULL pointer
-     opt == 1 means SUNDIALS function returns a flag so check if
-              flag >= 0
-     opt == 2 means function allocates memory so check if returned
-              NULL pointer */
-
-static int check_flag(void *flagvalue, const char *funcname, int opt)
+    opt == 0 means SUNDIALS function allocates memory so check if
+             returned NULL pointer
+    opt == 1 means SUNDIALS function returns a retval so check if
+             retval < 0
+    opt == 2 means function allocates memory so check if returned
+             NULL pointer
+*/
+static int check_retval(void *returnvalue, const char *funcname, int opt)
 {
-  int *errflag;
+  int *retval;
 
   /* Check if SUNDIALS function returned NULL pointer - no memory allocated */
-  if (opt == 0 && flagvalue == NULL) {
+  if (opt == 0 && returnvalue == NULL) {
     fprintf(stderr, "\nSUNDIALS_ERROR: %s() failed - returned NULL pointer\n\n",
             funcname);
-    return(1); }
+    return 1; }
 
-  /* Check if flag < 0 */
+  /* Check if retval < 0 */
   else if (opt == 1) {
-    errflag = (int *) flagvalue;
-    if (*errflag < 0) {
-      fprintf(stderr, "\nSUNDIALS_ERROR: %s() failed with flag = %d\n\n",
-              funcname, *errflag);
-      return(1); }}
+    retval = (int *) returnvalue;
+    if (*retval < 0) {
+      fprintf(stderr, "\nSUNDIALS_ERROR: %s() failed with retval = %d\n\n",
+              funcname, *retval);
+      return 1; }}
 
   /* Check if function returned NULL pointer - no memory allocated */
-  else if (opt == 2 && flagvalue == NULL) {
+  else if (opt == 2 && returnvalue == NULL) {
     fprintf(stderr, "\nMEMORY_ERROR: %s() failed - returned NULL pointer\n\n",
             funcname);
-    return(1); }
+    return 1; }
 
-  return(0);
+  return 0;
 }
+
+
+/*---- end of file ----*/
