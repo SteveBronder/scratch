@@ -92,19 +92,16 @@ At each step, either the WKB or RK solver is chosen for that step based on the r
 $$
 \delta x_{WKB} = A_+ \delta f_+ + A_- \delta f_- 
 $$
-
 $$
 \delta f_\pm = f_\pm \sum_{i=0}^n \delta[S_i]_t^{t + h}
 $$
 
 
 $$
-\delta \dot{x} 
+\delta \ddot{x}_{WKB} = B_+ \delta \ddot{f}_+ + B_- \delta \ddot{f}_- 
 $$
-
-
 $$
-\delta \dot{f}_\pm = \delta f_\pm \frac{\dot{f}_\pm}{f_\pm}
+\delta \ddot{f}_\pm = \delta f_\pm \frac{\ddot{f}_\pm}{f_\pm}
 $$
 
 OSCODE's time stepping modules may be run in a variety of "modes":
