@@ -99,12 +99,12 @@ $$
 
 
 $$
-\delta \ddot{x}_{WKB} = B_+ \delta  
+\delta \dot{x} 
 $$
 
 
 $$
-\delta \ddot{f}_\pm = \delta f_\pm \frac{\ddot{f}_\pm}{f_\pm}
+\delta \dot{f}_\pm = \delta f_\pm \frac{\dot{f}_\pm}{f_\pm}
 $$
 
 OSCODE's time stepping modules may be run in a variety of "modes":
