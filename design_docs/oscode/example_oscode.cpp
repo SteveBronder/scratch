@@ -2,7 +2,7 @@
 #include <vector>
 #include <sundials/sundials_types.h>
 #include <nvector/nvector_serial.h>
-#include <arkode/oscode_arkstep.h>
+#include <arkode/oscodezs_arkstep.h>
 #include <boost/math/special_functions/airy.hpp>
 
 // Define the system of ODEs:
