@@ -3,50 +3,59 @@
 # Summary
 [summary]: #summary
 
-This design document describes the motivation and architecture for adding the OSCODE numerical routine for the efficient solution of one dimensional, second order, ordinary differential equations with rapidly oscillating solutions. The proposed solver will will operate with differential equations of the form 
+This design document describes the motivation and architecture for adding the OSCODE numerical routine for the efficient solution of one dimensional, second order, linear, homogeneous ordinary differential equations with rapidly oscillating solutions. The proposed solver will will operate with differential equations of the form 
 
 $$ \ddot{x} + 2 \gamma(t) \dot{x}(t) + \omega^2(t)x(t) = 0 $$
 
-where $\gamma$ and $\omega$ may or may not be expressed as a closed form function of time.
+where $\gamma$ and $\omega$ may or may not be expressed as a closed form function of time. We further require $\gamma$ and $\omega$ to be real-valued. If $\omega$ is large, the solution may be highly oscillatory, and standard (polynomial-based) numerical methods will require $\mathcal{O}(\omega) timesteps/discretization points. In regimes where $\omega$ is large and smooth, OSCODE exploits an asympotic approximation to reduce this computational cost to $\mathcal{O}(1)$ ($\omega$-independent). In other regimes of the solution interval, OSCODE behaves as a Runge--Kutta solver, and is thus robust to changes in the behavior in the solution from oscillatory to non-oscillatory.
+
+<!--- We should cite the oscode papers for details, and the JOSS paper! --->
 
 This new module will follow the same C based API with an underlying C++ implementation. 
 
 # Motivation
 [motivation]: #motivation
 
-Solutions to oscillatory problems are often bespoke and use analytic approximations such as the Wentzel-Kramers-Brilouin (WKB) method. Giving researchers access to a general purpose solver for solutions for ODEs of the form written above will allow them to do their research faster and with better accuracy.
+Solutions to oscillatory problems are often bespoke and use analytic approximations such as the Wentzel-Kramers-Brilouin (WKB) method used by OSCODE. Giving researchers access to a general purpose solver for solutions for ODEs of the form written above will allow them to explore more computationally complex models in their research and speed up existing implementations.
 
-The second order ODE can be reposed as a first order ODE to fit into the standard schema for sundials solvers
+The second order ODE can be reposed as a set of two, first order ODEs to fit into the standard schema for sundials solvers,
 
 $$
 \dot{y} = \begin{pmatrix}
 y[1]\\
 -y[0]w^2(t)-2\gamma(t)y[1]
-\end{pmatrix}
+\end{pmatrix}.
 $$
 
-The most similar module is ARKODE, which solves equations with known explicit and implicit nonstiff and stiff time scale components. 
+The most similar module is ARKODE, which solves equations with known explicit and implicit, nonstiff and stiff time scale components, 
 
 $$
-M(t)\ddot{y} = f^E(t, y) + f^I(t, y), y(t_0) = y_0
+M(t)\ddot{y} = f^E(t, y) + f^I(t, y), \quad y(t_0) = y_0.
 $$
 
-For the new OSCODE module we propose the equation will take the form
+<!--- Are you sure the \ddot above is correct? I'd expect just \dot.--->
+
+For the new OSCODE module we propose the right-hand-side will be a subset of what ARKODE can handle, specifically,
 
 $$
-M(t)\ddot{y} = f^B(t, y), y(t_0) = y_0
+M(t)\ddot{y} = f^B(t, y), \quad y(t_0) = y_0
 $$
 
+<!--- What's the B in the above? --->
 
-where $$f^B(t, y)$$ has the ability to switch dynamically between a Runge-Kutta (RK) solver and the Wentzel-Kramers-Brillouin (WKB) solver based on the relative error of the RK and WKB methods.
+with $f^B(t, y)$ taking the form as the right-hand-side of a second-order, linear, homogeneous ODE as described above. OSCODE will then dynamically switch between a Runge-Kutta solver and its asymptotic WKB-based solver, at each step choosing the method which yields the larger step length (while keeping the local error within user tolerance).
 
-OSCODE's ability to switch between the RK and WKB solvers allow for accurate and easy time integration of mixed stiff/nonstiff systems of ordinary differential equations. The OSCODE framework is packaged with built in butcher tables for order 6, though users can supply their own buther tables of any order. OSCODE also supports unevenly spaced samples of $y$.
+The OSCODE framework is packaged with a built in Butcher tableau for a 6-stage, 5th order, and 4-stage, 4th order Runge-Kutta method, though users can supply their own Buthcer tableaus of any order. 
+
+<!--- OSCODE also supports unevenly spaced samples of $y$. What do you mean by this? --->
+
 
 Runge-Kutta Solver:
 
 
 Wentzel-Kramers-Brillouin Solver:
 
+<!--- What do you want me to put here? A quick math overview of each? --->
 
 # Guide-level explanation
 [guide-level-explanation]: #guide-level-explanation
@@ -63,19 +72,32 @@ Explain the proposal as if it was already included in the project and you were t
 
 For implementation-oriented RFCs (e.g. for compiler internals), this section should focus on how compiler contributors should think about the change, and give examples of its concrete impact. For policy RFCs, this section should provide an example-driven introduction to the policy, and explain its impact in concrete terms.
 
+<!--- Should the above be deleted? --->
 ------------------------------------
 
 (Note: Much of this is taken from the ARKODE docs and modified for OSCODE)
 
-The OSCODE infrastructure provides adaptive-step time integration modules for mixed stiff/nonstiff systems of ordinary differential equations (ODEs) where the stiff and nonstiff components are not known in advance and are possibly oscillatory.  
+<!--- I removed/modified many of the statements because they didn't apply for OSCODE.--->
 
-OSCODE supports ODE systems posed in a linearly implicit form
+The OSCODE infrastructure provides adaptive-step time integration modules for a class of nonstiff ordinary differential equations (ODEs) where the components may be highly oscillatory.  
+
+OSCODE supports ODE systems posed in the form
 
 $$
-M(t)\ddot{y} = f^B(t, y), y(t_0) = y_0
+M(t)\ddot{y} = f^B(t, y), \quad y(t_0) = y_0
 $$
 
-where $t$ is the independent variable, $y$ is the set of dependent variables (in $Rn$), $M$ is a user specified, nonsingular operator from $Rn$ to $Rn$, and the right hand side is a function whose stiff and nonstiff components are not known in advance. The function $$f^B(t, y)$$ has the ability to switch dynamically between stiff and non-stiff time scales based on the relative performance of a Runge-Kutta method and a Wentzel-Kramers-Brillouin method.
+with
+
+$$
+f^B(t, y) = \begin{pmatrix}
+y[1]\\
+-y[0]w^2(t)-2\gamma(t)y[1]
+\end{pmatrix}.
+$$
+
+
+Here, $t$ is the independent variable, $y$ is a set of two (complex-valued) dependent variables with one being the derivative of the other, $\omega$ and $\gamma$ are user specified, real-valued callables. The solver has the ability to switch dynamically between using a Runge-Kutta method and a Wentzel-Kramers-Brillouin method to advance the solution, while adaptively updating its stepsize.
 
 ## Adaptive single-step methods
 
