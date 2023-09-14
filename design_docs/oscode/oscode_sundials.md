@@ -7,7 +7,7 @@ This design document describes the motivation and architecture for adding the OS
 
 $$ \ddot{x} + 2 \gamma(t) \dot{x}(t) + \omega^2(t)x(t) = 0 $$
 
-where $\gamma$ and $\omega$ may or may not be expressed as a closed form function of time. We further require $\gamma$ and $\omega$ to be real-valued. If $\omega$ is large, the solution may be highly oscillatory, and standard (polynomial-based) numerical methods will require $\mathcal{O}(\omega) timesteps/discretization points. In regimes where $\omega$ is large and smooth, OSCODE exploits an asympotic approximation to reduce this computational cost to $\mathcal{O}(1)$ ($\omega$-independent). In other regimes of the solution interval, OSCODE behaves as a Runge--Kutta solver, and is thus robust to changes in the behavior in the solution from oscillatory to non-oscillatory.
+where $\gamma$ and $\omega$ may or may not be expressed as a closed form function of time. We further require $\gamma$ and $\omega$ to be real-valued. If $\omega$ is large, the solution may be highly oscillatory, and standard (polynomial-based) numerical methods will require $\mathcal{O}(\omega)$ timesteps/discretization points. In regimes where $\omega$ is large and smooth, OSCODE exploits an asympotic approximation to reduce this computational cost to $\mathcal{O}(1)$ ($\omega$-independent). In other regimes of the solution interval, OSCODE behaves as a Runge--Kutta solver, and is thus robust to changes in the behavior in the solution from oscillatory to non-oscillatory.
 
 <!--- We should cite the oscode papers for details, and the JOSS paper! --->
 
