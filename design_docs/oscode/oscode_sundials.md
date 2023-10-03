@@ -1,4 +1,4 @@
-# Title
+# Proposal For Including OSCODE Into Sundials
 
 ## Summary
 
@@ -217,7 +217,7 @@ int OSCStepARDCSetOrder(void* oscode_mem, int ord);
 int OSCStepSetExplicit(void* oscode_mem, OSCODE_MODE mode);
 
 // Set order and tables for ARDC solver 
-int OSCStepARDCSetTables(void* oscode_mem, int o, OSodeButcherTable Bi);
+int OSCStepARDCSetDerivativeMatrices(void* oscode_mem, int o, OSodeButcherTable Bi);
 
 // If the user sets the ARDC tables and order they must also set the series and derivative functions.
 int OSCStepARDCSetSeriesFuncs(void* oscode_mem, OSCddsFn dds, OSCdsiFn dsi, OSCdsfFn dsf);
@@ -226,6 +226,15 @@ int OSCStepARDCSetSeriesFuncs(void* oscode_mem, OSCddsFn dds, OSCdsiFn dsi, OSCd
 int OSCStepRKSetTables(void* oscode_mem, int o, OSodeButcherTable Bi)
 
 int OSCStepRKSetTableNum(void* oscode_mem, OSODE_ERKTableID etable)
+
+typedef double (*fun_ptr)(double) OSCGradFun;
+struct OSCGradFuns {
+    OSCGradFun* first_deriv_;
+    OSCGradFun* second_deriv_;
+};
+enum OSCODE_GRADIENT_MODE {Chebyshev, UserDefined};
+// If user sets mode to `UserDefined` g must have pointers to functions returning nth gradient
+OSCStepARDCGradientCalculation(OSCODE_GRADIENT_MODE mode, OSCGradFuns g);
 ```
 
 Should we have methods for setting the time step adaptivity? Ex
