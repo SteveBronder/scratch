@@ -28,29 +28,24 @@ $$
 The most similar module is ARKODE, which solves equations with known explicit and implicit, nonstiff and stiff time scale components,
 
 $$
-M(t)\ddot{y} = f^E(t, y) + f^I(t, y), \quad y(t_0) = y_0.
+M(t)\dot{y} = f^E(t, y) + f^I(t, y), \quad y(t_0) = y_0.
 $$
-
-<!--- Are you sure the \ddot above is correct? I'd expect just \dot.--->
 
 For the new OSCODE module we propose the right-hand-side will be a subset of what ARKODE can handle, specifically,
 
 $$
-M(t)\ddot{y} = f^E(t, y), \quad y(t_0) = y_0
+M(t)\ddot{y} = f^O(t, y), \quad y(t_0) = y_0 \\
 $$
 
+$$
+f^O(t, y) = \begin{pmatrix}
+y[1]\\
+-y[0]w^2(t)-2\gamma(t)y[1]
+\end{pmatrix}.
+$$
 
-with $f^B(t, y)$ taking the form as the right-hand-side of a second-order, linear, homogeneous ODE as described above. OSCODE will then dynamically switch between a Runge-Kutta solver and its asymptotic ARDC-based solver, at each step choosing the method which yields the larger step length (while keeping the local error within user tolerance).
+Here, $f^O$ is a function with varying sized oscillatory regions. OSCODE will then dynamically switch between a Runge-Kutta solver and its asymptotic ARDC-based solver, at each step choosing the method which yields the larger step length (while keeping the local error within user tolerance).
 
-The OSCODE framework is packaged with a built in Butcher tableau for a 6-stage, 5th order, and 4-stage, 4th order Runge-Kutta method, though users can supply their own Buthcer tableaus of any order.
-
-<!--- OSCODE also supports unevenly spaced samples of $y$. What do you mean by this? --->
-
-Runge-Kutta Solver:
-
-Augmented Riccati Defect Correction Solver:
-
-<!--- What do you want me to put here? A quick math overview of each? --->
 
 ## Guide-level Explanation
 
@@ -63,9 +58,6 @@ Explain the proposal as if it was already included in the project and you were t
 - Explaining the feature largely in terms of examples.
 - Explaining how Sundials programmers should *think* about the feature, and how it should impact the way they use the relevant package. It should explain the impact as concretely as possible.
 - If applicable, provide sample error messages, deprecation warnings, or migration guidance.
-- If applicable, describe the differences between teaching this to existing Stan programmers and new Stan programmers.
-
-For implementation-oriented RFCs (e.g. for compiler internals), this section should focus on how compiler contributors should think about the change, and give examples of its concrete impact. For policy RFCs, this section should provide an example-driven introduction to the policy, and explain its impact in concrete terms.
 
 <!--- Should the above be deleted? --->
 ------------------------------------
@@ -239,26 +231,23 @@ OSCStepARDCGradientCalculation(OSCODE_GRADIENT_MODE mode, OSCGradFuns g);
 
 Should we have methods for setting the time step adaptivity? Ex
 
-```C
-========================================================   ======================================  ========
-Optional input                                             Function name                           Default
-========================================================   ======================================  ========
-Set a custom time step adaptivity function                 :c:func:`OSCStepSetAdaptivityFn()`      internal
-Choose an existing time step adaptivity method             :c:func:`OSCStepSetAdaptivityMethod()`  0
-Explicit stability safety factor                           :c:func:`OSCStepSetCFLFraction()`       0.5
-Time step error bias factor                                :c:func:`OSCStepSetErrorBias()`         1.5
-Bounds determining no change in step size                  :c:func:`OSCStepSetFixedStepBounds()`   1.0  1.5
-Maximum step growth factor on convergence fail             :c:func:`OSCStepSetMaxCFailGrowth()`    0.25
-Maximum step growth factor on error test fail              :c:func:`OSCStepSetMaxEFailGrowth()`    0.3
-Maximum first step growth factor                           :c:func:`OSCStepSetMaxFirstGrowth()`    10000.0
-Maximum allowed general step growth factor                 :c:func:`OSCStepSetMaxGrowth()`         20.0
-Minimum allowed step reduction factor on error test fail   :c:func:`OSCStepSetMinReduction()`      0.1
-Time step safety factor                                    :c:func:`OSCStepSetSafetyFactor()`      0.96
-Error fails before MaxEFailGrowth takes effect             :c:func:`OSCStepSetSmallNumEFails()`    2
-Explicit stability function                                :c:func:`OSCStepSetStabilityFn()`       none
-========================================================   ======================================  ========
 
-```
+| Optional input                                               | Function name                            | Default  |
+|--------------------------------------------------------------|------------------------------------------|----------|
+| Set a custom time step adaptivity function                   | `OSCStepSetAdaptivityFn()`      | internal |
+| Choose an existing time step adaptivity method               | `OSCStepSetAdaptivityMethod()`  | 0        |
+| Explicit stability safety factor                             | `OSCStepSetCFLFraction()`       | 0.5      |
+| Time step error bias factor                                  | `OSCStepSetErrorBias()`         | 1.5      |
+| Bounds determining no change in step size                    | `OSCStepSetFixedStepBounds()`   | 1.0 - 1.5|
+| Maximum step growth factor on convergence fail               | `OSCStepSetMaxCFailGrowth()`    | 0.25     |
+| Maximum step growth factor on error test fail                | `OSCStepSetMaxEFailGrowth()`    | 0.3      |
+| Maximum first step growth factor                             | `OSCStepSetMaxFirstGrowth()`    | 10000.0  |
+| Maximum allowed general step growth factor                   | `OSCStepSetMaxGrowth()`         | 20.0     |
+| Minimum allowed step reduction factor on error test fail     | `OSCStepSetMinReduction()`      | 0.1      |
+| Time step safety factor                                      | `OSCStepSetSafetyFactor()`      | 0.96     |
+| Error fails before MaxEFailGrowth takes effect               | `OSCStepSetSmallNumEFails()`    | 2        |
+| Explicit stability function                                  | `OSCStepSetStabilityFn()`       | none     |
+
 
 ## Reference-level explanation
 ------------------------------------
@@ -309,7 +298,7 @@ Users can set:
 
 1. `w` and `g` functions that take in a timestep `t` along with a `void*` argument for their own data
 2. `OSCODEOmegaFn` and `OSCODEGammaFn`, the functors $\omega(t)$ and $\gamma(t)$ which have pointer type
-    - `std::complex<double> (OSCODEOmegaFn*)(realtype)`
+    - `complextype (OSCODEOmegaFn*)(realtype)`
 3. Options for the rk solver
     - order
     - tolerances
@@ -323,7 +312,7 @@ Users can set:
     - Function for Hermite and Lagrange
     - Gauss-Lobatto weights
 5. Options for solver
-    - initial conditions for the ODE, $ x(t) \f$, \f$ \frac{dx}{dt} $ evaluated at the start of the integration range
+    - initial conditions for the ODE, $ x(t)  \frac{dx}{dt} $ evaluated at the start of the integration range
     - start of integration range
     - end of integration range
     - do_times timepoints at which dense output is to be produced. Must be sorted
