@@ -48,6 +48,8 @@ $$
 As the solution $\mathbf{y}(t)$ may vary between oscillatory and smoothly varying, OSCODE will dynamically switch between a Runge-Kutta solver and its asymptotic Adaptive Riccati Defect Correction method (ARDC). At each step the solver will choose the method which yields the larger step length (while keeping the local error within user defined tolerance).
 
 
+The current ODCODE solver uses a mix of the Runge-Kutta solver and the  Wentzel-Kramers-Brillouin approximation, however the proposal here will switch out the WKB solver for the Adaptive Riccati Defect Correction solver, which has shown to be simpler for users, is easier to expand to higher orders, is faster, and tends to give better solutions.
+
 ## Guide-level Explanation
 
 ------------------------------------
@@ -262,7 +264,7 @@ int oscEvolve(OSCodeMem osc_mem, realtype tout, N_Vector yout,
               realtype *tret, int itask);
 ```
 
-The `OSCodeMemRec` will be similar to `ARKodeMemRec` containing the information for the estimation using the rk and wkb solver
+The `OSCodeMemRec` will be similar to `ARKodeMemRec` containing the information for the estimation using the RK and ARDC solver
 
 (TODO:) The example program `example_oscode.cpp` shows an example of the user API for the burst equation.
 
