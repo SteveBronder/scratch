@@ -2,49 +2,52 @@
 
 ## Summary
 
-This design document describes the motivation and architecture for adding the OSCODE numerical routine for the efficient solution of one dimensional, second order, linear, homogeneous ordinary differential equations with rapidly oscillating solutions. The proposed solver will will operate with differential equations of the form
+This design document describes the motivation and architecture for adding the OSCODE numerical routine for the efficient solution of second order, linear, homogeneous Ordinary Differential Equations (ODEs) with rapidly oscillating solutions. The proposed solver will will operate with initial value problems (IVPs) of the form
 
-$$ \ddot{x} + 2 \gamma(t) \dot{x}(t) + \omega^2(t)x(t) = 0 $$
+$$ 
+u(t_0) = u_0, \quad u(t_1) = u_1,
+$$
+$$
+\ddot{u}(t) + 2 \gamma(t) \dot{u}(t) + \omega^2(t)u(t) = 0, \quad t \in [t_0, t_1], 
+$$
 
-where $\gamma$ and $\omega$ may or may not be expressed as a closed form function of time. We further require $\gamma$ and $\omega$ to be real-valued. If $\omega$ is large, the solution may be highly oscillatory, and standard (polynomial-based) numerical methods will require $\mathcal{O}(\omega)$ timesteps/discretization points. In regimes where $\omega$ is large and smooth, OSCODE exploits an asympotic approximation to reduce this computational cost to $\mathcal{O}(1)$ ($\omega$-independent). In other regimes of the solution interval, OSCODE behaves as a Runge--Kutta solver, and is thus robust to changes in the behavior in the solution from oscillatory to non-oscillatory.
+where $\gamma$ and $\omega$ may or may not be expressed as a closed form function of time. We further require $\gamma$ and $\omega$ to be real-valued and $\omega > 0$.. If $\omega$ is large, the components may become highly oscillatory, and standard (polynomial-based) numerical methods will require $\mathcal{O}(\omega)$ timesteps/discretization points. In regimes where $\omega$ is large and smooth, OSCODE exploits an asympotic approximation to reduce this computational cost to $\mathcal{O}(1)$ ($\omega$-independent). In other regimes of the solution interval, OSCODE behaves as a Runge--Kutta solver, and is thus robust to changes in the behavior in the solution from oscillatory to non-oscillatory.
 
 <!--- We should cite the oscode papers for details, and the JOSS paper! --->
 
-This new module will follow the same C based API with an underlying C++ implementation.
-
 ## Motivation
 
-Solutions to oscillatory problems are often bespoke and use analytic approximations such as the Adaptive Ricatti Defect Correction (ARDC) method used by OSCODE. Giving researchers access to a general purpose solver for solutions for ODEs of the form written above will allow them to explore more computationally complex models in their research and speed up existing implementations.
+Solutions to oscillatory problems are often bespoke and use analytic approximations such as the Wentzel-Kramers-Brillouin approximation (WKB) method used by OSCODE. Giving researchers access to a general purpose solver for solutions for ODEs of the form written above will allow them to explore more computationally complex models in their research and speed up existing implementations.
 
 The second order ODE can be reposed as a set of two, first order ODEs to fit into the standard schema for sundials solvers,
 
 $$
-\dot{y} = \begin{pmatrix}
-y[1]\\
--y[0]w^2(t)-2\gamma(t)y[1]
-\end{pmatrix}.
+\dot{\mathbf{y}} = \begin{pmatrix}
+\mathbf{y}[1]\\
+-\mathbf{y}[0]\omega^2(t)-2\gamma(t)\mathbf{y}[1]
+\end{pmatrix}
 $$
 
-The most similar module is ARKODE, which solves equations with known explicit and implicit, nonstiff and stiff time scale components,
+Among the SUNDIALS modules, ARKODE ---which solves equations with known explicit and implicit, stiff and nonstill timescale components--- is structured most similarly to OSCODE.
 
 $$
-M(t)\dot{y} = f^E(t, y) + f^I(t, y), \quad y(t_0) = y_0.
+M(t)\dot{\mathbf{y}} = f^E(t, \mathbf{y}) + f^I(t, \mathbf{y}), \quad \mathbf{y}(t_0) = \mathbf{y}_0
 $$
 
 For the new OSCODE module we propose the right-hand-side will be a subset of what ARKODE can handle, specifically,
 
 $$
-M(t)\ddot{y} = f^O(t, y), \quad y(t_0) = y_0 \\
+M(t)\dot{\mathbf{y}} = f^O(t, \mathbf{y}), \quad \mathbf{y}|(t_0) = \mathbf{y}_0, \\
 $$
-
+where $f^O(t)$ takes the specific form
 $$
 f^O(t, y) = \begin{pmatrix}
-y[1]\\
--y[0]w^2(t)-2\gamma(t)y[1]
+\mathbf{y}[1]\\
+-\mathbf{y}[0]\omega^2(t)-2\gamma(t)\mathbf{y}[1]
 \end{pmatrix}.
 $$
 
-Here, $f^O$ is a function with varying sized oscillatory regions. OSCODE will then dynamically switch between a Runge-Kutta solver and its asymptotic ARDC-based solver, at each step choosing the method which yields the larger step length (while keeping the local error within user tolerance).
+As the solution $\mathbf{y}(t)$ may vary between oscillatory and smoothly varying, OSCODE will dynamically switch between a Runge-Kutta solver and its asymptotic ARDC-based solver, at each step choosing the method which yields the larger step length (while keeping the local error within user defined tolerance).
 
 
 ## Guide-level Explanation
@@ -66,70 +69,44 @@ Explain the proposal as if it was already included in the project and you were t
 
 <!--- I removed/modified many of the statements because they didn't apply for OSCODE.--->
 
-The OSCODE infrastructure provides adaptive-step time integration modules for a class of nonstiff ordinary differential equations (ODEs) where the components may be highly oscillatory.  
+The OSCODE infrastructure provides adaptive-step time integration modules for a class of nonstiff Ordinary Differential Equations (ODEs) where the components may be highly oscillatory. Current users of ARKODE will notice a similar structure in the C API of OSCODE.
 
-OSCODE supports ODE systems posed in the form below
+OSCODE supports ODE systems posed in the form
 
 $$
-M(t)\ddot{y} = f^O(t, y), \quad y(t_0) = y_0
+M(t)\dot{\mathbf{y}} = f^O(t, \mathbf{y}), \quad \mathbf{y}|(t_0) = \mathbf{y}_0, \\
 $$
-
-with
-
+where $f^O(t)$ takes the specific form
 $$
 f^O(t, y) = \begin{pmatrix}
-y[1]\\
--y[0]w^2(t)-2\gamma(t)y[1]
+\mathbf{y}[1]\\
+-\mathbf{y}[0]\omega^2(t)-2\gamma(t)\mathbf{y}[1]
 \end{pmatrix}.
 $$
 
-Here, $f^O$ is a function with varying sized oscillatory regions. $t$ is the independent variable, $y$ is a set of two (complex-valued) dependent variables with one being the derivative of the other, $\omega$ and $\gamma$ are user specified, real-valued callables. The solver has the ability to switch dynamically between using a Runge-Kutta method and a Wentzel-Kramers-Brillouin method to advance the solution, while adaptively updating its stepsize.
+Here, $t$ is the independent variable, $\mathbf{y}$ is a set of two (complex-valued) dependent variables with one being the derivative of the other, $\omega$ and $\gamma$ are user specified, real-valued callables. The solver has the ability to switch dynamically between using a Runge-Kutta method and the adaptive Riccati defect correction method to advance the solution, while adaptively updating its stepsize.
 
 ### Adaptive single-step methods
 
-The OSCODE framework is designed to support single step, IVP integration methods
+The OSCODE framework is designed to support single step, IVP integration methods. The stepsize is determined by the time-stepping method (based on user-provided accuracy requirements). However, users may place minimum/maximum bounds on if desired.
 
-$$
-\ddot{y} = f(t ,y), y(t_0) = y_0
-$$
-
-The choice of step size is determined by the time-stepping method (based on user-provided inputs, typically accuracy requirements). However, users may place minimum/maximum bounds on if desired.
-
-At each step, either the ARDC or RK solver is chosen for that step based on the relative difference in error between the two methods. For RK, the error is generated by the difference in the $N$th and $N-1$th order RK steps. The ARDC steps error for the function evaluation and the first derivative of $x$ with respect to time is defined as
-
-$$
-\delta x_{ARDC} = A_+ \delta f_+ + A_- \delta f_-
-$$
-$$
-\delta f_\pm = f_\pm \sum_{i=0}^n \delta[S_i]_t^{t + h}
-$$
-
-$$
-\delta \dot{x}\_{ARDC} = B\_+ \delta \dot{f}\_+ + B\_- \delta \dot{f}\_-
-$$
-
-$$
-\delta \dot{f}\_\pm = \delta f\_\pm \frac{\dot{f}\_\pm}{f\_\pm}
-$$
+At each step, either the ARDC or RK solver is chosen for that step based on their estimated local error. For RK, the error is generated by the difference in the $N$th and $N-1$th order RK steps. The ARDC step's error is calculated as the residual of a transformed form of the original ODE, by substituting in ARDC's solution estimate.
 
 OSCODE's time stepping modules may be run in a variety of "modes":
 
-- NORMAL: The solver will take internal steps until it has just overtaken a user-specified output time, $t_{out}$, in the direction of integration, i.e. $t_{n-1} < t_{out} \le t_n$ for forward integration, or $t_{n} < t_{out} \le t_{n-1}$ for backward integration. It will then compute an approximation to the solution $y(t_{out})$ by interpolation (using one of the dense output routines described in the section TBD).
+- NORMAL: The solver will take internal steps until it has just overtaken a user-specified end time, $t_1$, in the direction of integration, i.e. $t_{n-1} < t_1 \le t_n$ for forward integration, or $t_{n} < t_1 \le t_{n-1}$ for backward integration. It will then compute an approximation to the solution $\mathbf{y}(t_1)$ by interpolation (using one of the dense output routines described in the section on interpolation below).
 
-- ONE-STEP: The solver will only take a single internal step $y_{n-1} \rightarrow y_n$ and then return control back to the calling program. If this step will overtake $t_{out}$ then the solver will again return an interpolated result; otherwise it will return a copy of the internal solution $y_n$
+- ONE-STEP: The solver will only take a single internal step $\mathbf{y}_{n-1} \rightarrow \mathbf{y}_n$ and then return control back to the calling program. If this step will overtake $t_1$ then the solver will again return an interpolated result; otherwise it will return a copy of the internal solution $\mathbf{y}_n$.
 
-- NORMAL-TSTOP: The solver will take internal steps until the next step will overtake $t_{out}$. It will then limit this next step so that $t_n = t_{n-1} + h_n = t_{out}$, and once the step completes it will return a copy of the internal solution
+- NORMAL-TSTOP: The solver will take internal steps until the point where the _next_ step would overtake $t_1$. It will then limit this next step so that $t_n = t_{n-1} + h_n = t_1$, and once the step completes it will return a copy of the internal solution.
 
-- ONE-STEP-TSTOP: The solver will check whether the next step will overtake $t_{out}$ if not then this mode is identical to "one-step" above; otherwise it will limit this next step so that $t_n = t_{n-1} + h_n = t_{out}$. In either case, once the step completes it will return a copy of the internal solution $y_n$.
-.
-
-We note that interpolated solutions may be slightly less accurate than the internal solutions produced by the solver. Hence, to ensure that the returned value has full method accuracy one of the "tstp" modes may be used.
+- ONE-STEP-TSTOP: The solver will check whether the next step would overtake $t_1$. If not, then this mode is identical to "one-step" above; otherwise it will limit this next step so that $t_n = t_{n-1} + h_n = t_1$. In either case, once the step completes it will return a copy of the internal solution $\mathbf{y}_n$.
 
 ### Interpolation
 
-As mentioned above, the time-stepping modules in OSCODE support interpolation of solution $y(t_{out})$ and derivatives $y^{(d)}(t_{out})$, where $t_{out}$ occurs within a completed time step from $t_{n-1} \rightarrow t_n$. Additionally, this module supports extrapolation of solutions and derivatives for outside this interval (e.g. to construct predictors for iterative nonlinear and linear solvers). To this end, OSCODE currently supports construction of polynomial interpolants $p_q(t)$ of polynomial degree up to $q=5$, although users may select interpolants of lower degree.
+As mentioned above, the time-stepping modules in OSCODE support interpolation of solution $\mathbf{y}(t_{\mathrm{out}})$ and derivatives $\frac{\mathrm{d}\mathbf{y}}{\mathrm{d}t}|_{t = t_{\mathrm{out}}}$, where $t_{\mathrm{out}}$ occurs within a completed time step from $[t_{n-1},  t_n]$. To this end, OSCODE currently supports construction of polynomial interpolants $p_q(t)$ where the degree $q$ is determined by a parameter passed to the solver by the user.
 
-OSCODE provides three complementary interpolation approaches, both of which are accessible from any of the time-stepping modules: "Hermite" and "Lagrange". The Hermite approach has been included with ARKODE since its inception, and is more suitable for non-stiff problems; Lagrange is designed to provide increased accuracy when integrating stiff problems. These two methods are described in detail within the ARKODE documentation (link).
+OSCODE provides two complementary interpolation approaches, both of which are accessible from any of the time-stepping modules: "Hermite" and "Lagrange". The Hermite approach has been included with ARKODE since its inception, and is more suitable for non-stiff problems; Lagrange is designed to provide increased accuracy when integrating stiff problems. These two methods are described in detail within the ARKODE documentation (link).
 
 ### User callable functions
 
@@ -303,24 +280,19 @@ Users can set:
     - order
     - tolerances
     - butcher tables
-    - Gauss - Lobatto weights
-    - Integral Function
-4. Options for the wkb solver
+4. Options for the ARDC solver
     - Order
-    - order related weight matrices
-    - Derivative and series functions
-    - Function for Hermite and Lagrange
-    - Gauss-Lobatto weights
+    - tolerance(s)
 5. Options for solver
     - initial conditions for the ODE, $ x(t)  \frac{dx}{dt} $ evaluated at the start of the integration range
     - start of integration range
     - end of integration range
     - do_times timepoints at which dense output is to be produced. Must be sorted
-    - Direction
+    - Direction of integration
     - order of ARDC approximation to be used
     - (local) relative tolerance
     - (local) absolute tolerance
-    - initial stepsize to use
+    - initial stepsize suggestion (to be refined by the solver)
 
 The implimentation can utilize the ARKODE explicit runga kutta solver, but we will have to write an implementation of the ARDC solver. For a first implementation I think it would be fine to only have the 6th order ARDC solver already written in C++, then in another PR expose functions that allow the user to change the ARDC solvers order.
 
@@ -348,7 +320,7 @@ A few examples of what this can include are:
 
 - For language, library, tools, and compiler proposals: Does this feature exist in other programming languages and what experience have their community had?
 
-The OSCODE solver is currently available as a python package and standalone header files.
+The OSCODE solver is currently available as a python package and standalone header files. the RICCATI solver is also available as it's own python package.
 
 ## Papers
 
@@ -356,9 +328,11 @@ Are there any published papers or great posts that discuss this? If you have som
 
 - Original paper: ["Efficient method for solving highly oscillatory ordinary differential equations
 with applications to physical systems"](https://journals.aps.org/prresearch/pdf/10.1103/PhysRevResearch.2.013030)
-- JOSS Paper on Python / C++ implementation: [Link](https://joss.theoj.org/papers/10.21105/joss.02830)
+- JOSS Paper on Python / C++ implementation of OSCODE: [Link](https://joss.theoj.org/papers/10.21105/joss.02830)
+- Riccati paper: ["An adaptive spectral method for oscillatory second-order linear ODEs with frequency-independent cost"](https://arxiv.org/abs/2212.06924)
 - C++ Implementation: [Link](https://github.com/fruzsinaagocs/oscode)
 - Python Wrapper Docs: [Link](https://oscode.readthedocs.io/en/latest/)
+- Riccati python package [Link](https://github.com/fruzsinaagocs/riccati)
 
 ## Unresolved Questions
 
@@ -367,8 +341,6 @@ with applications to physical systems"](https://journals.aps.org/prresearch/pdf/
 Whether OSCODE should be its own seperate module or whether it is possible to fit it in the ARKODE framework.
 
 - What parts of the design do you expect to resolve through the implementation of this feature before stabilization?
-
-I'd like to resolve what the user should have access to modify, for example the butcher tables in the ARDC method.
 
 - What related issues do you consider out of scope for this RFC that could be addressed in the future independently of the solution that comes out of this RFC?
 
