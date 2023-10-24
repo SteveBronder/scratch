@@ -11,13 +11,11 @@ $$
 \ddot{u}(t) + 2 \gamma(t) \dot{u}(t) + \omega^2(t)u(t) = 0, \quad t \in [t_0, t_1], 
 $$
 
-where $\gamma$ and $\omega$ may or may not be expressed as a closed form function of time. We further require $\gamma$ and $\omega$ to be real-valued and $\omega > 0$.. If $\omega$ is large, the components may become highly oscillatory, and standard (polynomial-based) numerical methods will require $\mathcal{O}(\omega)$ timesteps/discretization points. In regimes where $\omega$ is large and smooth, OSCODE exploits an asympotic approximation to reduce this computational cost to $\mathcal{O}(1)$ ($\omega$-independent). In other regimes of the solution interval, OSCODE behaves as a Runge--Kutta solver, and is thus robust to changes in the behavior in the solution from oscillatory to non-oscillatory.
-
-<!--- We should cite the oscode papers for details, and the JOSS paper! --->
+where $\gamma$ and $\omega$ may or may not be expressed as a closed form function of time. We further require $\gamma$ and $\omega$ to be real-valued and $\omega > 0$ If $\omega$ is large, the components may become highly oscillatory, and standard (polynomial-based) numerical methods will require $\mathcal{O}(\omega)$ timesteps/discretization points. In regimes where $\omega$ is large and smooth, OSCODE exploits an asympotic approximation to reduce this computational cost to $\mathcal{O}(1)$ ($\omega$-independent). In other regimes of the solution interval, OSCODE behaves as a Runge--Kutta solver, and is thus robust to changes in the behavior in the solution from oscillatory to non-oscillatory.
 
 ## Motivation
 
-Solutions to oscillatory problems are often bespoke and use analytic approximations such as the Wentzel-Kramers-Brillouin approximation (WKB) method used by OSCODE. Giving researchers access to a general purpose solver for solutions for ODEs of the form written above will allow them to explore more computationally complex models in their research and speed up existing implementations.
+Solutions to oscillatory problems are often bespoke and use analytic approximations such as the Wentzel-Kramers-Brillouin approximation (WKB) method used by the current OSCODE solver. Giving researchers access to a general purpose solver for solutions for ODEs of the form written above will allow them to explore more computationally complex models in their research and speed up existing implementations.
 
 The second order ODE can be reposed as a set of two, first order ODEs to fit into the standard schema for sundials solvers,
 
@@ -28,7 +26,7 @@ $$
 \end{pmatrix}
 $$
 
-Among the SUNDIALS modules, ARKODE ---which solves equations with known explicit and implicit, stiff and nonstill timescale components--- is structured most similarly to OSCODE.
+Among the SUNDIALS modules, ARKODE --which solves equations with known explicit and implicit, stiff and nonstill timescale components-- is structured most similarly to OSCODE.
 
 $$
 M(t)\dot{\mathbf{y}} = f^E(t, \mathbf{y}) + f^I(t, \mathbf{y}), \quad \mathbf{y}(t_0) = \mathbf{y}_0
@@ -47,7 +45,7 @@ f^O(t, y) = \begin{pmatrix}
 \end{pmatrix}.
 $$
 
-As the solution $\mathbf{y}(t)$ may vary between oscillatory and smoothly varying, OSCODE will dynamically switch between a Runge-Kutta solver and its asymptotic ARDC-based solver, at each step choosing the method which yields the larger step length (while keeping the local error within user defined tolerance).
+As the solution $\mathbf{y}(t)$ may vary between oscillatory and smoothly varying, OSCODE will dynamically switch between a Runge-Kutta solver and its asymptotic Adaptive Riccati Defect Correction method (ARDC). At each step the solver will choose the method which yields the larger step length (while keeping the local error within user defined tolerance).
 
 
 ## Guide-level Explanation
@@ -62,12 +60,9 @@ Explain the proposal as if it was already included in the project and you were t
 - Explaining how Sundials programmers should *think* about the feature, and how it should impact the way they use the relevant package. It should explain the impact as concretely as possible.
 - If applicable, provide sample error messages, deprecation warnings, or migration guidance.
 
-<!--- Should the above be deleted? --->
 ------------------------------------
 
 (Note: Much of this is taken from the ARKODE docs and modified for OSCODE)
-
-<!--- I removed/modified many of the statements because they didn't apply for OSCODE.--->
 
 The OSCODE infrastructure provides adaptive-step time integration modules for a class of nonstiff Ordinary Differential Equations (ODEs) where the components may be highly oscillatory. Current users of ARKODE will notice a similar structure in the C API of OSCODE.
 
@@ -112,15 +107,15 @@ OSCODE provides two complementary interpolation approaches, both of which are ac
 
 ```c++
 /**
- * @param fe -- the name of the C function (of type `OSRhsFn()`)
+ * @param fe the name of the C function (of type `OSRhsFn()`)
  *   defining the explicit portion of the right-hand side function in
  *   `M(t)\, y'(t) = f^E(t,y) + f^I(t,y)`.
- * @param fi -- the name of the C function (of type `OSRhsFn()`)
+ * @param fi the name of the C function (of type `OSRhsFn()`)
  *       defining the implicit portion of the right-hand side function in
  *       `M(t)\, y'(t) = f^E(t,y) + f^I(t,y)`.
- * @param t0 -- the initial value of :math:`t`.
- * @param y0 -- the initial condition vector :math:`y(t_0)`.
- * @param sunctx -- the :c:type:`SUNContext` object (see :numref:`SUNDIALS.SUNContext`)
+ * @param t0 the initial value of :math:`t`.
+ * @param y0 the initial condition vector :math:`y(t_0)`.
+ * @param sunctx  the `SUNContext` object (see :numref:`SUNDIALS.SUNContext`)
  * @return If successful, a pointer to initialized problem memory
  * of type ``void*``, to be passed to all user-facing OSCStep routines
  * listed below.  If unsuccessful, a ``NULL`` pointer will be
@@ -185,7 +180,7 @@ int OSCStepARDCSetOrder(void* oscode_mem, int ord);
 // OSCODE_MODE is an enum of {RK, ARDC, BOTH} with default of BOTH
 int OSCStepSetExplicit(void* oscode_mem, OSCODE_MODE mode);
 
-// Set order and tables for ARDC solver 
+// Set order and tables for ARDC solver's Chebyshev gradient method
 int OSCStepARDCSetDerivativeMatrices(void* oscode_mem, int o, OSodeButcherTable Bi);
 
 // If the user sets the ARDC tables and order they must also set the series and derivative functions.
@@ -283,18 +278,18 @@ Users can set:
 4. Options for the ARDC solver
     - Order
     - tolerance(s)
+    - User supplied gradient functions (default Chebyshev methods)
 5. Options for solver
     - initial conditions for the ODE, $ x(t)  \frac{dx}{dt} $ evaluated at the start of the integration range
     - start of integration range
     - end of integration range
     - do_times timepoints at which dense output is to be produced. Must be sorted
     - Direction of integration
-    - order of ARDC approximation to be used
     - (local) relative tolerance
     - (local) absolute tolerance
     - initial stepsize suggestion (to be refined by the solver)
 
-The implimentation can utilize the ARKODE explicit runga kutta solver, but we will have to write an implementation of the ARDC solver. For a first implementation I think it would be fine to only have the 6th order ARDC solver already written in C++, then in another PR expose functions that allow the user to change the ARDC solvers order.
+The implimentation can utilize the ARKODE explicit runga kutta solver, but we will have to write an implementation of the ARDC solver. The ARDC solver is currently only written in python, but will be ported to C for use in OSCODE.
 
 Tests and example code will be written for the airy and burst examples.
 
@@ -320,7 +315,7 @@ A few examples of what this can include are:
 
 - For language, library, tools, and compiler proposals: Does this feature exist in other programming languages and what experience have their community had?
 
-The OSCODE solver is currently available as a python package and standalone header files. the RICCATI solver is also available as it's own python package.
+The OSCODE solver is currently available as a python package and standalone header files. the riccati solver is also available as it's own python package.
 
 ## Papers
 
