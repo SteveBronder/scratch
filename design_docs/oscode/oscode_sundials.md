@@ -4,11 +4,11 @@
 
 This design document describes the motivation and architecture for adding the OSCODE numerical routine for the efficient solution of second order, linear, homogeneous Ordinary Differential Equations (ODEs) with rapidly oscillating solutions. The proposed solver will will operate with initial value problems (IVPs) of the form
 
-$$ 
+$$
 u(t_0) = u_0, \quad u(t_1) = u_1,
 $$
 $$
-\ddot{u}(t) + 2 \gamma(t) \dot{u}(t) + \omega^2(t)u(t) = 0, \quad t \in [t_0, t_1], 
+\ddot{u}(t) + 2 \gamma(t) \dot{u}(t) + \omega^2(t)u(t) = 0, \quad t \in [t_0, t_1],
 $$
 
 where $\gamma$ and $\omega$ may or may not be expressed as a closed form function of time. We further require $\gamma$ and $\omega$ to be real-valued and $\omega > 0$ If $\omega$ is large, the components may become highly oscillatory, and standard (polynomial-based) numerical methods will require $\mathcal{O}(\omega)$ timesteps/discretization points. In regimes where $\omega$ is large and smooth, OSCODE exploits an asympotic approximation to reduce this computational cost to $\mathcal{O}(1)$ ($\omega$-independent). In other regimes of the solution interval, OSCODE behaves as a Runge--Kutta solver, and is thus robust to changes in the behavior in the solution from oscillatory to non-oscillatory.
@@ -46,7 +46,6 @@ f^O(t, y) = \begin{pmatrix}
 $$
 
 As the solution $\mathbf{y}(t)$ may vary between oscillatory and smoothly varying, OSCODE will dynamically switch between a Runge-Kutta solver and its asymptotic Adaptive Riccati Defect Correction method (ARDC). At each step the solver will choose the method which yields the larger step length (while keeping the local error within user defined tolerance).
-
 
 The current ODCODE solver uses a mix of the Runge-Kutta solver and the  Wentzel-Kramers-Brillouin approximation, however the proposal here will switch out the WKB solver for the Adaptive Riccati Defect Correction solver, which has shown to be simpler for users, is easier to expand to higher orders, is faster, and tends to give better solutions.
 
@@ -95,7 +94,7 @@ OSCODE's time stepping modules may be run in a variety of "modes":
 
 - ONE-STEP: The solver will only take a single internal step $\mathbf{y}_{n-1} \rightarrow \mathbf{y}_n$ and then return control back to the calling program. If this step will overtake $t_1$ then the solver will again return an interpolated result; otherwise it will return a copy of the internal solution $\mathbf{y}_n$.
 
-- NORMAL-TSTOP: The solver will take internal steps until the point where the _next_ step would overtake $t_1$. It will then limit this next step so that $t_n = t_{n-1} + h_n = t_1$, and once the step completes it will return a copy of the internal solution.
+- NORMAL-TSTOP: The solver will take internal steps until the point where the *next* step would overtake $t_1$. It will then limit this next step so that $t_n = t_{n-1} + h_n = t_1$, and once the step completes it will return a copy of the internal solution.
 
 - ONE-STEP-TSTOP: The solver will check whether the next step would overtake $t_1$. If not, then this mode is identical to "one-step" above; otherwise it will limit this next step so that $t_n = t_{n-1} + h_n = t_1$. In either case, once the step completes it will return a copy of the internal solution $\mathbf{y}_n$.
 
@@ -184,11 +183,7 @@ int OSCStepSetExplicit(void* oscode_mem, OSCODE_MODE mode);
 
 // Set order and tables for ARDC solver's Chebyshev gradient method
 int OSCStepARDCSetDerivativeMatrices(void* oscode_mem, int o, OSodeButcherTable Bi);
-
-// If the user sets the ARDC tables and order they must also set the series and derivative functions.
-int OSCStepARDCSetSeriesFuncs(void* oscode_mem, OSCddsFn dds, OSCdsiFn dsi, OSCdsfFn dsf);
-
-// Set order and tables for RK solver 
+// Set order and tables for RK solver
 int OSCStepRKSetTables(void* oscode_mem, int o, OSodeButcherTable Bi)
 
 int OSCStepRKSetTableNum(void* oscode_mem, OSODE_ERKTableID etable)
@@ -204,7 +199,6 @@ OSCStepARDCGradientCalculation(OSCODE_GRADIENT_MODE mode, OSCGradFuns g);
 ```
 
 Should we have methods for setting the time step adaptivity? Ex
-
 
 | Optional input                                               | Function name                            | Default  |
 |--------------------------------------------------------------|------------------------------------------|----------|
@@ -222,8 +216,8 @@ Should we have methods for setting the time step adaptivity? Ex
 | Error fails before MaxEFailGrowth takes effect               | `OSCStepSetSmallNumEFails()`    | 2        |
 | Explicit stability function                                  | `OSCStepSetStabilityFn()`       | none     |
 
-
 ## Reference-level explanation
+
 ------------------------------------
 This is the technical portion of the RFC. Explain the design in sufficient detail that:
 
@@ -266,9 +260,7 @@ int oscEvolve(OSCodeMem osc_mem, realtype tout, N_Vector yout,
 
 The `OSCodeMemRec` will be similar to `ARKodeMemRec` containing the information for the estimation using the RK and ARDC solver
 
-(TODO:) The example program `example_oscode.cpp` shows an example of the user API for the burst equation.
-
-Users can set:
+Users can set items defined in the API above, with the most important user settings listed below.
 
 1. `w` and `g` functions that take in a timestep `t` along with a `void*` argument for their own data
 2. `OSCODEOmegaFn` and `OSCODEGammaFn`, the functors $\omega(t)$ and $\gamma(t)$ which have pointer type
@@ -310,6 +302,7 @@ The other main question to this proposal is whether it's possible to make this f
 - What is the impact of not doing this?
 
 ------------------------------------
+
 ## Prior art
 
 Discuss prior art, both the good and the bad, in relation to this proposal.
